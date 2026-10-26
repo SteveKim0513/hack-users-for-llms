@@ -7,3 +7,17 @@ __pycache__/
 reports/
 research_notes/
 result-test/
+
+# 로컬 전용: 운영 데이터 사본, 백업, 임시 작업
+temp/
+# 비밀값 (.env.example은 커밋한다)
+.env.*
+!.env.example
+# 데이터 덤프
+*.dump
+# Claude Code 개인 파일·작업 폴더
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
+# 의존성·빌드 결과
+dist/
