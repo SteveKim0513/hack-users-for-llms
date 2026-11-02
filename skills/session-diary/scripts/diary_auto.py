@@ -442,11 +442,17 @@ def write_one(day_text, force):
     return 0
 
 
+def stable_path(path):
+    """오래 쓸 수 있는 실행 파일 경로. 링크를 풀면 버전 폴더를 가리켜 업데이트 때 사라진다.
+    다만 fnm 같은 도구의 셸별 임시 경로는 셸이 끝나면 사라지므로 그것만 푼다."""
+    return os.path.realpath(path) if "_multishells" in path else os.path.abspath(path)
+
+
 def find_runner():
     for kind, name in (("claude", "claude"), ("codex", "codex")):
         path = shutil.which(name)
         if path:
-            return {"runner": os.path.realpath(path), "runner_kind": kind}
+            return {"runner": stable_path(path), "runner_kind": kind}
     raise SystemExit("claude나 codex 명령을 찾지 못했다.")
 
 

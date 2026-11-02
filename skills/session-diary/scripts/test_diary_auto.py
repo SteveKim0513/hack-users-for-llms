@@ -384,6 +384,23 @@ class SwitchTest(Base):
         self.assertTrue(data["EnvironmentVariables"]["PATH"].startswith("/opt/x/bin:"))
         self.assertTrue(data["EnvironmentVariables"]["USER"])
 
+    def test_runner_link_is_kept_so_a_cli_update_does_not_break_it(self):
+        version = self.root / "versions" / "2.1.312"
+        version.parent.mkdir()
+        version.write_text("", encoding="utf-8")
+        link = self.root / "claude"
+        link.symlink_to(version)
+        self.assertEqual(da.stable_path(str(link)), str(link))
+
+    def test_shell_scoped_runner_path_is_resolved(self):
+        real = self.root / "node" / "codex"
+        real.parent.mkdir()
+        real.write_text("", encoding="utf-8")
+        shell = self.root / "fnm_multishells" / "1" / "codex"
+        shell.parent.mkdir(parents=True)
+        shell.symlink_to(real)
+        self.assertEqual(da.stable_path(str(shell)), os.path.realpath(real))
+
     def test_app_copy_leaves_tests_out_and_can_find_its_references(self):
         script = da.copy_app()
         app = Path(script).parents[1]
