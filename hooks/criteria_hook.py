@@ -14,6 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
+# max_per_session, cooldown_turns는 점검 mod(hooks/gap.tsx)가 쓴다. 이 훅은 묻지 않는다.
 DEFAULTS = {"enabled": False, "intensity": "light", "max_per_session": 3, "cooldown_turns": 3}
 REVIEW_DAYS = 90
 MAX_LISTED = 8
@@ -150,11 +151,10 @@ def load_state(path):
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(state, dict):
-            return {"turn": int(state.get("turn", 0)), "delegations": int(state.get("delegations", 0)),
-                    "fires": int(state.get("fires", 0)), "last_fire": int(state.get("last_fire", -999))}
+            return {"delegations": int(state.get("delegations", 0))}
     except (ValueError, OSError, TypeError):
         pass
-    return {"turn": 0, "delegations": 0, "fires": 0, "last_fire": -999}
+    return {"delegations": 0}
 
 
 def save_state(path, state):
@@ -244,12 +244,11 @@ def build_context(event, home=None, data_dir=None, today=None):
     cfg = load_config(project_dir, global_dir if global_dir.is_dir() else None)
     if cfg["enabled"] is not True:
         return None
-    if len(prompt) < 10 or prompt.startswith("/"):
+    if len(prompt) < 10 or prompt.startswith(("/", "[criteria-gap 점검 답변]")):
         return None
 
     spath = state_file(event.get("session_id"), data_dir)
     state = load_state(spath)
-    state["turn"] += 1
     try:
         # 기준을 묻는 대화의 답변이면 끼어들지 않는다
         prev = last_assistant_text(event.get("transcript_path"))
@@ -268,15 +267,6 @@ def build_context(event, home=None, data_dir=None, today=None):
         hit = [c for c in confirmed if matches(c, prompt)]
         rest = [c for c in confirmed if c not in hit]
 
-        strong = False
-        if not hit:
-            room = state["fires"] < int(cfg["max_per_session"])
-            cooled = state["turn"] - state["last_fire"] > int(cfg["cooldown_turns"])
-            strong = room and cooled
-            if strong:
-                state["fires"] += 1
-                state["last_fire"] = state["turn"]
-
         lines = ["[criteria 훅] 이 프로젝트는 위임 전 기준 점검을 켜 두었다. "
                  f"이 요청은 위임으로 감지됐다(신호: {', '.join(found) or '위임 동사'})."]
         if hit:
@@ -291,12 +281,7 @@ def build_context(event, home=None, data_dir=None, today=None):
             lines.append("재확인이 필요한 기준(초안 또는 오래됨, 확정으로 취급하지 않음):")
             lines += [f"  - {fmt(c)} · {c['why']}" for c in recheck[:3]]
         lines.append("확정 기준을 적용하면 답변 첫머리에 '적용한 기준: ...' 한 줄로 밝히는 것이 이 프로젝트의 규칙이다.")
-        if strong:
-            lines.append("이 요청에 필요한 판단 기준이 위에 없다. 이 프로젝트의 규칙은 criteria-gap 스킬의 절차에 따라 "
-                         "작업 전에 막는 기준 하나만 사용자에게 묻는 것이다. 사용자가 '일단 진행'을 고르면 임시 기준으로 "
-                         "진행하되 임시 기준임을 밝히고 저장하지 않는다.")
-        elif hit:
-            lines.append("위 기준이 이 요청의 판단을 모두 다루지 않으면 빠진 기준을 작업 전에 확인하는 것이 규칙이다.")
+        lines.append("빠진 기준이나 전제는 criteria-gap 점검 mod가 턴이 끝난 뒤 입력창 위에서 사용자에게 따로 묻는다.")
         return "\n".join(lines)[:4000]
     finally:
         save_state(spath, state)

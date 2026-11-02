@@ -105,12 +105,12 @@ class HookTest(unittest.TestCase):
         self.assertIsNotNone(out)
 
     # --- 2단계 기록소 ---
-    def test_no_criteria_nudges_to_ask(self):
+    def test_no_criteria_is_stated_and_asking_is_left_to_the_mod(self):
         self.config(enabled=True, intensity="active")
         out = self.run_hook("매거진 소스를 필터해줘 부탁합니다")
         self.assertIn("확정 기준이 없다", out)
-        self.assertIn("criteria-gap", out)
-        self.assertIn("일단 진행", out)
+        self.assertIn("criteria-gap 점검 mod", out)
+        self.assertNotIn("사용자에게 묻는 것이다", out)
 
     def test_matching_confirmed_criterion_is_injected_without_strong_nudge(self):
         self.config(enabled=True, intensity="active")
@@ -121,12 +121,11 @@ class HookTest(unittest.TestCase):
         self.assertNotIn("확정 기준이 없다", out)
         self.assertNotIn("criteria-gap 스킬의 절차", out)
 
-    def test_unrelated_criterion_is_listed_but_still_nudges(self):
+    def test_unrelated_criterion_is_listed(self):
         self.config(enabled=True, intensity="active")
         self.add("a.md", criterion("보고서", "톤", "짧고 건조하게"))
         out = self.run_hook("매거진 소스를 필터해줘 부탁합니다")
         self.assertIn("그 외 확정 기준", out)
-        self.assertIn("criteria-gap 스킬의 절차", out)
 
     def test_draft_and_stale_are_not_treated_as_confirmed(self):
         self.config(enabled=True, intensity="active")
@@ -163,20 +162,23 @@ class HookTest(unittest.TestCase):
         self.assertLess(len(line), 260)
 
     # --- 안전장치 ---
-    def test_max_per_session_and_cooldown(self):
+    def test_never_tells_the_model_to_ask_in_chat(self):
+        # 묻는 일은 점검 mod(hooks/gap.tsx)가 한다. 같은 공백을 두 번 묻지 않게.
         self.config(enabled=True, intensity="active", max_per_session=2, cooldown_turns=1)
-        strong = lambda o: o and "criteria-gap 스킬의 절차" in o
-        self.assertTrue(strong(self.run_hook("매거진 소스를 필터해줘 부탁합니다", session="c")))   # turn1 fire
-        self.assertFalse(strong(self.run_hook("매거진 소스를 정리해줘 부탁합니다", session="c")))  # turn2 쿨다운
-        self.assertTrue(strong(self.run_hook("매거진 소스를 비교해줘 부탁합니다", session="c")))   # turn3 fire
-        self.assertFalse(strong(self.run_hook("매거진 소스를 분석해줘 부탁합니다", session="c")))  # turn4 쿨다운
-        self.assertFalse(strong(self.run_hook("매거진 소스를 평가해줘 부탁합니다", session="c")))  # turn5 한도 초과
-        self.assertFalse(strong(self.run_hook("매거진 소스를 요약해줘 부탁합니다", session="c")))
+        for verb in ("필터", "정리", "비교", "분석"):
+            out = self.run_hook(f"매거진 소스를 {verb}해줘 부탁합니다", session="c")
+            self.assertNotIn("사용자에게 묻", out)
+            self.assertNotIn("작업 전에", out)
 
-    def test_sessions_are_independent(self):
-        self.config(enabled=True, intensity="active", max_per_session=1, cooldown_turns=0)
-        self.assertIn("criteria-gap 스킬의 절차", self.run_hook("소스를 필터해줘 부탁합니다", session="s1"))
-        self.assertIn("criteria-gap 스킬의 절차", self.run_hook("소스를 필터해줘 부탁합니다", session="s2"))
+    def test_gap_mod_answer_is_left_alone(self):
+        self.config(enabled=True, intensity="active")
+        self.assertIsNone(self.run_hook("[criteria-gap 점검 답변]\n질문: 소스를 필터할 기준은?\n내 답: 1차 자료만"))
+
+    def test_first_delegation_signal_is_per_session(self):
+        self.config(enabled=True, intensity="light")
+        self.assertIsNotNone(self.run_hook("소스를 필터해줘 부탁합니다", session="s1"))
+        self.assertIsNone(self.run_hook("소스를 정리해줘 부탁합니다", session="s1"))
+        self.assertIsNotNone(self.run_hook("소스를 필터해줘 부탁합니다", session="s2"))
 
     def test_weird_session_id_is_safe(self):
         self.config(enabled=True, intensity="active")
