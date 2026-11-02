@@ -20,6 +20,7 @@ git clone https://github.com/SteveKim0513/hack-users-for-llms.git ~/hack-users-f
 mkdir -p ~/.agents/skills
 ln -s ~/hack-users-for-llms/skills/criteria ~/.agents/skills/criteria
 ln -s ~/hack-users-for-llms/skills/criteria-gap ~/.agents/skills/criteria-gap
+ln -s ~/hack-users-for-llms/skills/session-diary ~/.agents/skills/session-diary
 ```
 설치 후 스킬이 안 보이면 Codex를 재시작한다.
 
@@ -47,6 +48,7 @@ ln -s ~/hack-users-for-llms/skills/<스킬이름> ~/.claude/skills/<스킬이름
 | `criteria` | 합의한 판단 기준을 기록·조회·변경하는 기준 기록소. |
 | `criteria-init` | 위임 전 기준 점검 훅을 켜고 끄는 스위치. criteria 점검 mod 질문의 강도와 횟수도 여기서 정한다 (Claude Code 플러그인 전용) |
 | `criteria-gap` | 대화에서 기준 공백을 찾아 대화로 묻고, AI의 암묵 기준과 비교해 재요청 (`criteria` 필요) |
+| `session-diary` | 하루치 세션 기록(Claude Code·Codex)을 일기로 쓰고, 일하는 방식, 성과, AI를 쓰는 수준을 인용 근거로 피드백한 뒤 내일의 계획 하나를 준다. 점수는 없고, 지난 일기와 비교한다. 일기는 저장소 밖 `~/.session-diary/`에 저장. Python 3 필요 |
 
 ## Mod: compass, criteria (Claude Code 플러그인 전용)
 
@@ -74,6 +76,7 @@ Claude Code 화면에 붙는 기능 두 개다. 플러그인으로 설치해야 
 ## 개발
 
 ```bash
-cd hooks && python3 -m unittest -v test_criteria_hook
+(cd hooks && python3 -m unittest -v test_criteria_hook)
+(cd skills/session-diary/scripts && python3 -m unittest -v test_day_sessions)
 claude plugin validate . && claude plugin test .
 ```
