@@ -33,13 +33,31 @@ def turns_of(material):
     return turns
 
 
-def problems(diary, material):
-    """(인용 수, [(문제, 인용)])."""
+def repair(diary, material):
+    """글자가 재료의 한 턴에서만 찾아지면 시각과 말한 사람을 재료에 맞춰 적는다. 그 밖의 인용은 그대로 둔다."""
     turns = turns_of(material)
+
+    def fix(match):
+        text = normalize(match.group(1))
+        places = [key for key, bodies in turns.items() if any(text in body for body in bodies)]
+        if len(places) != 1:
+            return match.group(0)
+        when, who = places[0]
+        return "「%s」(%s%s)" % (match.group(1), when, " AI" if who == "AI" else "")
+
+    return QUOTE_RE.sub(fix, diary)
+
+
+def problems(diary, material, earlier=""):
+    """(인용 수, [(문제, 인용)]). earlier에 그대로 있는 인용은 지난 일기의 말이라 재료에 없어도 틀리지 않다."""
+    turns = turns_of(material)
+    earlier = normalize(earlier)
     quotes = QUOTE_RE.findall(diary)
     found = []
     for text, when, ai in quotes:
         text = normalize(text)
+        if text in earlier:
+            continue
         if not when:
             found.append(("시각 표시 없음", text))
         elif not any(text in body for body in turns.get((when, "AI" if ai else "나"), [])):

@@ -378,7 +378,7 @@ def is_question(text):
     return len(text) <= QUESTION_MAX_CHARS and text.rstrip().endswith(QUESTION_ENDINGS)
 
 
-def render(day, sessions, commit_map, stats):
+def render(day, sessions, commit_map, stats, ai_keep=AI_KEEP, question_keep=AI_BEFORE_QUESTION_KEEP):
     f = facts(sessions)
     tools = ", ".join("%s %d개" % kv for kv in f["by_tool"].most_common())
     projects = ", ".join("%s %d개" % kv for kv in f["by_project"].most_common())
@@ -407,7 +407,7 @@ def render(day, sessions, commit_map, stats):
                 who, keep = "나", USER_KEEP
             else:
                 after = turns[i + 1] if i + 1 < len(turns) else None
-                who, keep = "AI", AI_BEFORE_QUESTION_KEEP if after and is_question(after["text"]) else AI_KEEP
+                who, keep = "AI", question_keep if after and is_question(after["text"]) else ai_keep
             out.append("[%s %s] %s" % (t["at"].strftime("%H:%M"), who, mask(clip(t["text"], keep))))
     return "\n".join(out) + "\n"
 

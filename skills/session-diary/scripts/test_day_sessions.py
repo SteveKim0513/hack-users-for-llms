@@ -323,6 +323,18 @@ class QuoteTest(unittest.TestCase):
     def test_facts_section_is_not_quotable(self):
         self.assertEqual(self.check("「세션 1개」(10:01 AI)")[1][0][0], "재료에 없음")
 
+    def test_repair_fills_a_missing_or_wrong_citation_when_the_place_is_unique(self):
+        fixed = cq.repair("「검증을 더 하자」, 「고치겠습니다」(10:00)", self.MATERIAL)
+        self.assertEqual(fixed, "「검증을 더 하자」(10:00), 「고치겠습니다」(10:01 AI)")
+        self.assertEqual(cq.problems(fixed, self.MATERIAL)[1], [])
+
+    def test_repair_leaves_made_up_and_ambiguous_quotes(self):
+        material = "[10:00 나] 좋아\n[10:01 AI] 답\n[10:02 나] 좋아\n"
+        self.assertEqual(cq.repair("「없는 말」, 「좋아」", material), "「없는 말」, 「좋아」")
+
+    def test_quote_from_an_earlier_diary_is_not_wrong(self):
+        self.assertEqual(cq.problems("「어제 한 말」", "[10:00 나] 오늘\n", "지난 일기: 「어제 한 말」(09:00)")[1], [])
+
     def test_heading_inside_a_turn_does_not_cut_it(self):
         material = "## 세션 p · C · 10:00~10:05 · 내 발화 1개\n[10:00 AI] 앞\n## 소제목\n뒤에 있는 문장\n"
         self.assertEqual(cq.problems("「뒤에 있는 문장」(10:00 AI)", material), (1, []))

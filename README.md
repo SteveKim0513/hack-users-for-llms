@@ -48,7 +48,7 @@ ln -s ~/hack-users-for-llms/skills/<스킬이름> ~/.claude/skills/<스킬이름
 | `criteria` | 합의한 판단 기준을 기록·조회·변경하는 기준 기록소. |
 | `criteria-init` | 위임 전 기준 점검 훅을 켜고 끄는 스위치. criteria 점검 mod 질문의 강도와 횟수도 여기서 정한다 (Claude Code 플러그인 전용) |
 | `criteria-gap` | 대화에서 기준 공백을 찾아 대화로 묻고, AI의 암묵 기준과 비교해 재요청 (`criteria` 필요) |
-| `session-diary` | 하루치 세션 기록(Claude Code·Codex)을 일기로 쓰고, 일하는 방식, 성과, AI를 쓰는 수준을 인용 근거로 피드백한 뒤 내일의 계획 하나를 준다. 점수는 없고, 지난 일기와 비교한다. 일기는 저장소 밖 `~/.session-diary/`에 저장. Python 3 필요 |
+| `session-diary` | 켜 두면 매일 자정에 전날의 세션 기록(Claude Code·Codex)으로 일기를 자동으로 남긴다. 일하는 방식, 성과, AI를 쓰는 수준을 인용 근거로 피드백하고 내일의 계획 하나를 준다. 점수는 없고 지난 일기와 비교한다. 꺼져 있던 날은 다음에 켜질 때 쓰고, 대화가 없던 날은 없었다고 남긴다. 일기는 저장소 밖 `~/.session-diary/`에 저장. 아래 "자동 세션 일기" 참고 |
 
 ## Mod: compass, criteria (Claude Code 플러그인 전용)
 
@@ -68,6 +68,17 @@ Claude Code 화면에 붙는 기능 두 개다. 플러그인으로 설치해야 
 
 확인하지 못함: 실제 세션에서 띄워 보지 않았다. `claude plugin validate`와 `claude plugin test`(가짜 엔진으로 모드 고르기, 화면 그리기, 버튼, 입력칸, 횟수 제한)만 통과했다. 판정 모델이 실제로 좋은 질문을 고르는지도 확인하지 못했다.
 
+## 자동 세션 일기
+
+"세션 일기 켜줘"라고 하거나 `python3 skills/session-diary/scripts/diary_auto.py on`을 실행한다. 끄기는 `off`, 상태는 `status`. 켜면 스크립트를 `~/.session-diary/.auto/app`에 복사하고 launchd에 등록한다. 매 정각과 로그인 때 깨어나 어제까지 빠진 일기를 쓴다. 플러그인을 업데이트하면 다시 켜야 새 판이 돈다.
+
+- **권한:** 재료에는 웹 글이나 붙여넣은 글이 들어 있다. 숨은 지시를 따를 위험이 있어 AI는 도구 없이 글만 돌려주고, 파일 읽기와 쓰기는 스크립트가 한다. Codex는 도구를 끌 수 없어 읽기 전용 격리로 돌리며 보호가 더 약하다. `claude`가 있으면 그것을 먼저 쓴다.
+- **보내는 것:** 이 컴퓨터의 모든 프로젝트 대화를 AI 서비스로 보낸다. 키는 정해진 패턴만 가린다.
+- **비용:** 2026-10-30~11-01 실측. Sonnet으로 재료 16만 자인 날 약 $0.7, 1만 자인 날 약 $0.2. 대화가 없는 날은 AI를 부르지 않는다.
+- **실패:** 다음 정각에 다시 시도하고, 6번 실패하면 그 날 일기에 쓰지 못했다고 남긴다.
+
+확인하지 못함: launchd에 실제로 등록해 돌려 보지 않았다(launchd와 비슷한 환경 변수로 `tick`을 직접 돌려 Claude 3일치는 확인). 잠자기와 재부팅 뒤 동작, Codex로 쓰기, macOS 밖 환경.
+
 ## 위임 전 점검 훅 (Claude Code 전용, 기본 꺼짐)
 
 플러그인에 `hooks/`가 들어 있지만, 켜기 전에는 아무것도 하지 않는다. 켜려면 Claude Code에서 `criteria-init`을 실행한다(범위와 강도를 묻는다).
@@ -77,6 +88,6 @@ Claude Code 화면에 붙는 기능 두 개다. 플러그인으로 설치해야 
 
 ```bash
 (cd hooks && python3 -m unittest -v test_criteria_hook)
-(cd skills/session-diary/scripts && python3 -m unittest -v test_day_sessions)
+(cd skills/session-diary/scripts && python3 -m unittest -v test_day_sessions test_diary_auto)
 claude plugin validate . && claude plugin test .
 ```
