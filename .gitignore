@@ -1,23 +1,27 @@
-.DS_Store
-node_modules/
-.env
-__pycache__/
-.criteria/
-# 로컬 조사 보고서와 메모 (공개하지 않음)
-reports/
-research_notes/
-result-test/
+# 공개 repo에는 스킬과 플러그인 파일만 올린다.
+# 그 밖의 로컬 자료(보고서, 조사 메모, 시험 결과, 임시 작업)는 local/ 아래에 둔다.
+/local/
 
-# 로컬 전용: 운영 데이터 사본, 백업, 임시 작업
-temp/
+# 개발 환경(스튜디오 플러그인 설정, 작업 규칙, 보조 스크립트). 이 컴퓨터에만 둔다.
+/.claude/
+/CLAUDE.md
+/CLAUDE.local.md
+/CONTRIBUTING.md
+/docs/
+/scripts/
+/.editorconfig
+
+# 개인 기준
+.criteria/
+
 # 비밀값 (.env.example은 커밋한다)
+.env
 .env.*
 !.env.example
-# 데이터 덤프
-*.dump
-# Claude Code 개인 파일·작업 폴더
-CLAUDE.local.md
-.claude/settings.local.json
-.claude/worktrees/
-# 의존성·빌드 결과
+
+# 시스템·빌드 부산물
+.DS_Store
+__pycache__/
+node_modules/
 dist/
+*.dump
