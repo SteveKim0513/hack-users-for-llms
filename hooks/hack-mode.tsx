@@ -1,21 +1,54 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Compass, GapKind, GapQuestion, Goal, Proposal, Step, StepKind } from '../types'
+import type {
+  Compass,
+  GapKind,
+  GapQuestion,
+  Goal,
+  HackMode,
+  ModeName,
+  Proposal,
+  Step,
+  StepKind,
+} from '../types'
 
-// /compass: 대화 목표를 정하면 턴마다 판정 한 번으로 두 가지를 한다.
-//   1. 목표까지의 진척을 패널의 LED 판에 찍는다.
-//   2. 사용자 생각에 빈 곳(생략된 전제, 섞인 구분, 원리 이해, 빠진 판단 기준)이 보이면 입력창 위에 질문 하나를 띄운다.
-// 질문의 강도, 세션당 횟수, 쉬는 턴은 criteria-init이 쓰는 .criteria/config.json의 hook에서 읽는다(없으면 기본값).
+// hack-mode: 이 플러그인의 mod 두 개를 켜고 고른다(/hack-mode). 고른 모드는 프로젝트마다 기억한다.
+//   compass  : /compass로 대화 목표를 정하면 턴마다 진척을 패널의 LED 판에 찍는다.
+//   criteria : 턴이 끝나면 사용자 생각의 빈 곳(생략된 전제, 섞인 구분, 원리 이해, 빠진 판단 기준)을 보고
+//              입력창 위에 질문 하나를 띄운다.
+//   둘 다    : 판정 한 번으로 둘을 함께 하고, 질문도 목표에 비추어 고른다.
+// criteria 질문의 강도, 세션당 횟수, 쉬는 턴은 criteria-init이 쓰는 .criteria/config.json의 hook에서 읽는다(없으면 기본값).
 
 const PLUGIN = 'hack-users-for-llms'
 const PANE = 'compass'
 const TOOL = (name: string) => `mcp__${PLUGIN}__${name}`
 const MAX_ROWS = 12
-const JUDGE_MODEL = 'sonnet'
+// 진척만 볼 때는 가벼운 모델, 질문을 고를 때는 더 나은 모델을 쓴다.
+const PROGRESS_MODEL = 'haiku'
+const QUESTION_MODEL = 'sonnet'
 // 답하지 않은 질문은 이만큼 턴이 지나면 내린다.
 const EXPIRE_TURNS = 3
-const ANSWER_TAG = '[compass 점검 답변]'
+const ANSWER_TAG = '[criteria 점검 답변]'
+
+const MODES: ModeName[] = ['compass', 'criteria', 'both', 'off']
+
+const MODE_LABEL: Record<ModeName, string> = {
+  compass: 'compass만',
+  criteria: 'criteria만',
+  both: '둘 다',
+  off: '끄기',
+}
+
+const hasCompass = (m: ModeName) => m === 'compass' || m === 'both'
+const hasCriteria = (m: ModeName) => m === 'criteria' || m === 'both'
+const offText = (name: string) => `${name}가 꺼져 있어요. /hack-mode에서 켜세요.`
+
+const MODE_EMPTY: HackMode = { mode: 'off', isPicking: false }
+
+const hackMode = atom({ plugin: 'hack-users-for-llms', key: 'mode' } as const, MODE_EMPTY, {
+  shape: 'mode-1',
+})
 
 const EMPTY: Compass = {
   goal: null,
@@ -34,6 +67,9 @@ const EMPTY: Compass = {
 const compass = atom({ plugin: 'hack-users-for-llms', key: 'compass' } as const, EMPTY, {
   shape: 'compass-2',
 })
+
+// 모드는 프로젝트(세션의 루트 폴더)마다 따로 기억한다.
+const storeKey = async ($: EngineInterface) => `mode:${await $.session.root()}`
 
 const COLORS: Record<StepKind, string> = {
   start: '#cfd8dc',
@@ -170,14 +206,14 @@ const answerPrompt = (q: GapQuestion, answer: string) =>
     q.options.length ? `보기: ${q.options.join(' / ')}` : '',
     `근거로 본 내 말: "${q.quote}"`,
     `내 답: ${answer}`,
-    '이 답은 /compass의 빈 곳 점검에서 왔다. 다루는 법은 criteria-gap 스킬의 "compass 점검 답변" 절에 있다.',
+    '이 답은 hack-mode의 criteria 점검에서 왔다. 다루는 법은 criteria-gap 스킬의 "criteria 점검 답변" 절에 있다.',
   ]
     .filter(Boolean)
     .join('\n')
 
-// 목표가 있는 동안 매 요청에 붙는 사실 한 줄. [criteria 훅]의 "기준을 묻는다" 규칙과 겹치지 않게 한다.
+// criteria가 켜진 동안 매 요청에 붙는 사실 한 줄. [criteria 훅]의 "기준을 묻는다" 규칙과 겹치지 않게 한다.
 const SESSION_NOTE =
-  '[compass] 이 세션은 /compass 목표가 정해져 있다. 빠진 기준과 전제는 compass가 턴이 끝난 뒤 입력창 위에서 사용자에게 묻고, 답은 "[compass 점검 답변]" 메시지로 들어온다. 그래서 이 세션에서 기준을 묻는 일은 compass가 맡는다.'
+  '[hack-mode] 이 세션은 criteria 점검이 켜져 있다. 빠진 기준과 전제는 이 mod가 턴이 끝난 뒤 입력창 위에서 사용자에게 묻고, 답은 "[criteria 점검 답변]" 메시지로 들어온다. 그래서 이 세션에서 기준을 묻는 일은 이 mod가 맡는다.'
 
 // ---------- prompts ----------
 
@@ -212,23 +248,7 @@ const RULE: Record<Config['intensity'], string> = {
   active: '- 위 네 가지 중 하나가 분명히 보이고 답에 따라 결과가 달라지면 묻는다.',
 }
 
-const judgeSystem = (intensity: Config['intensity'], canAsk: boolean) => `당신은 대화 여정 판정관입니다. 사람과 AI의 대화가 정해진 목표 지점을 향해 가고 있는지 방금 끝난 한 턴만 보고 판정하고, 사용자의 생각에 빈 곳이 있으면 물을 질문 하나를 고릅니다.
-
-## 진척 판정
-- "up": 이 턴이 목표에 실질적으로 한 걸음 가까워지게 했다 (결정이 내려짐, 산출물이 진척됨, 막힌 문제가 풀림).
-- "flat": 제자리이거나 옆길이다 (확인만 함, 목표와 무관한 논의, 같은 얘기 반복).
-- "down": 목표에서 멀어졌다 (하지 말 것을 함, 잘못된 방향으로 만든 것을 되돌려야 함, 혼란이 커짐).
-- done: "다 됐다"의 기준을 이번 턴으로 충족했으면 true.
-- pivot: 사용자가 목표 자체를 다른 방향으로 바꾸려는 신호가 분명하면 true. 단순히 AI가 옆길로 샌 것은 pivot이 아니라 flat/down이다.
-- pivot이 true면 new_destination(새 도착점 한 문장)과 carry(지금까지 한 일 중 새 목표에도 쓸모 있는 걸음 수, 0 이상)를 채운다.
-
-## 빈 곳 점검
-${canAsk ? GAP_RULES(intensity) : '이번 턴은 묻지 않는다. ask는 false로 둔다.'}
-
-JSON 한 개만 출력합니다. 다른 말은 쓰지 않습니다.
-{"move":"up|flat|down","reason":"40자 이내 한국어 한 줄","done":false,"pivot":false,"new_destination":"","carry":0,"ask":false,"kind":"premise|distinction|principle|criterion","question":"","options":[],"quote":"근거가 된 사용자 발화, 60자 이내","why":"지금 묻는 이유, 40자 이내"}`
-
-const GAP_RULES = (intensity: Config['intensity']) => `AI가 아니라 사용자의 생각을 점검합니다. 목표와 "다 됐다"의 기준에 비추어 봅니다.
+const GAP_RULES = (intensity: Config['intensity'], withGoal: boolean) => `AI가 아니라 사용자의 생각을 점검합니다.${withGoal ? ' 목표와 "다 됐다"의 기준에 비추어 봅니다.' : ''}
 
 볼 것(kind):
 - "premise" 생략된 전제: 사용자의 요청이 말하지 않은 가정에 기대고 있고, AI가 그 가정을 임의로 채웠다.
@@ -250,23 +270,59 @@ ${RULE[intensity]}
 
 `
 
-const judgePrompt = (c: Compass, turn: TurnSnapshot, known: string[]) => {
-  const goal = c.goal as Goal
-  const here = c.steps[c.steps.length - 1]
-  const recent = c.steps
-    .slice(-6)
-    .map(s => `T${s.turn} ${s.kind}: ${s.reason}`)
-    .join('\n')
+const PROGRESS_RULES = `## 진척 판정
+- "up": 이 턴이 목표에 실질적으로 한 걸음 가까워지게 했다 (결정이 내려짐, 산출물이 진척됨, 막힌 문제가 풀림).
+- "flat": 제자리이거나 옆길이다 (확인만 함, 목표와 무관한 논의, 같은 얘기 반복).
+- "down": 목표에서 멀어졌다 (하지 말 것을 함, 잘못된 방향으로 만든 것을 되돌려야 함, 혼란이 커짐).
+- done: "다 됐다"의 기준을 이번 턴으로 충족했으면 true.
+- pivot: 사용자가 목표 자체를 다른 방향으로 바꾸려는 신호가 분명하면 true. 단순히 AI가 옆길로 샌 것은 pivot이 아니라 flat/down이다.
+- pivot이 true면 new_destination(새 도착점 한 문장)과 carry(지금까지 한 일 중 새 목표에도 쓸모 있는 걸음 수, 0 이상)를 채운다.`
+
+const PROGRESS_FIELDS = '"move":"up|flat|down","reason":"40자 이내 한국어 한 줄","done":false,"pivot":false,"new_destination":"","carry":0'
+const QUESTION_FIELDS =
+  '"ask":false,"kind":"premise|distinction|principle|criterion","question":"","options":[],"quote":"근거가 된 사용자 발화, 60자 이내","why":"지금 묻는 이유, 40자 이내"'
+
+type JudgeWork = { progress: boolean; ask: boolean; withGoal: boolean; intensity: Config['intensity'] }
+
+const judgeSystem = (w: JudgeWork) => {
+  const role =
+    w.progress && w.ask
+      ? '당신은 대화 여정 판정관입니다. 사람과 AI의 대화가 정해진 목표 지점을 향해 가고 있는지 방금 끝난 한 턴만 보고 판정하고, 사용자의 생각에 빈 곳이 있으면 물을 질문 하나를 고릅니다.'
+      : w.progress
+        ? '당신은 대화 여정 판정관입니다. 사람과 AI의 대화가 정해진 목표 지점을 향해 가고 있는지 방금 끝난 한 턴만 보고 판정합니다.'
+        : '당신은 사람과 AI의 대화에서 방금 끝난 한 턴(사용자 메시지와 AI 답변)을 보고, 사용자의 생각에 빈 곳이 있으면 물을 질문 하나를 고릅니다.'
+  const fields = [w.progress ? PROGRESS_FIELDS : '', w.ask ? QUESTION_FIELDS : ''].filter(Boolean).join(',')
 
   return [
-    `목표 도착점: ${goal.destination}`,
-    `다 됐다의 기준: ${goal.done}`,
-    `하지 말 것: ${goal.avoid}`,
-    `현재 높이: ${here?.height ?? 0} / ${goal.rows}`,
-    '',
-    '최근 경로:',
-    recent || '(없음)',
-    '',
+    role,
+    w.progress ? PROGRESS_RULES : '',
+    w.ask ? `## 빈 곳 점검\n${GAP_RULES(w.intensity, w.withGoal)}` : '',
+    `JSON 한 개만 출력합니다. 다른 말은 쓰지 않습니다.\n{${fields}}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+const judgePrompt = (c: Compass, turn: TurnSnapshot, known: string[], withGoal: boolean) => {
+  const lines: string[] = []
+  if (withGoal && c.goal) {
+    const here = c.steps[c.steps.length - 1]
+    const recent = c.steps
+      .slice(-6)
+      .map(s => `T${s.turn} ${s.kind}: ${s.reason}`)
+      .join('\n')
+    lines.push(
+      `목표 도착점: ${c.goal.destination}`,
+      `다 됐다의 기준: ${c.goal.done}`,
+      `하지 말 것: ${c.goal.avoid}`,
+      `현재 높이: ${here?.height ?? 0} / ${c.goal.rows}`,
+      '',
+      '최근 경로:',
+      recent || '(없음)',
+      '',
+    )
+  }
+  lines.push(
     '확정 기준:',
     known.length ? known.join('\n') : '(없음)',
     '',
@@ -274,7 +330,9 @@ const judgePrompt = (c: Compass, turn: TurnSnapshot, known: string[]) => {
     '',
     `이번 턴 AI 답변:\n${clip(turn.answer || '(없음)', 3500)}`,
     turn.tools.length ? `\n이번 턴에 쓴 도구: ${turn.tools.slice(0, 30).join(', ')}` : '',
-  ].join('\n')
+  )
+
+  return lines.join('\n')
 }
 
 // ---------- state changes ----------
@@ -433,43 +491,55 @@ function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: '목표 여정' })
 }
 
-async function judge($: EngineInterface, snap: TurnSnapshot) {
+// 이 턴에 할 일(진척, 질문)을 모드와 설정으로 정하고, 할 일이 있으면 모델을 한 번 부른다.
+// force는 /criteria-check: 진척은 보지 않고, 쉬는 턴과 횟수를 무시하고 질문만 고른다. 질문을 띄웠으면 true.
+async function judge($: EngineInterface, snap: TurnSnapshot, force = false): Promise<boolean> {
+  const { mode } = await read($, hackMode)
   const before = await read($, compass)
-  if (!before.goal) return
-  await update($, compass, c => ({ ...c, isJudging: true }))
+  const progress = !force && hasCompass(mode) && before.goal !== null
+  // 질문은 사용자 발화에 기대야 하므로, 사용자가 쓴 말이 없는 턴에서는 묻지 않는다.
+  const wantsQuestion = hasCriteria(mode) && before.question === null && snap.prompt.trim() !== ''
   let cfg = DEFAULTS
   let known: string[] = []
-  try {
-    const dirs = await criteriaDirs($)
-    cfg = await loadConfig($, dirs)
-    known = await confirmedIndex($, dirs)
-  } catch {
-    // 설정을 못 읽으면 기본값으로 판정한다.
+  if (wantsQuestion) {
+    try {
+      const dirs = await criteriaDirs($)
+      cfg = await loadConfig($, dirs)
+      known = await confirmedIndex($, dirs)
+    } catch {
+      // 설정을 못 읽으면 기본값으로 판정한다.
+    }
   }
-  const canAsk =
-    !before.question &&
-    before.asked < cfg.max_per_session &&
-    snap.turn - before.lastAskTurn > cfg.cooldown_turns
+  const ask =
+    wantsQuestion &&
+    (force || (before.asked < cfg.max_per_session && snap.turn - before.lastAskTurn > cfg.cooldown_turns))
+  if (!progress && !ask) return false
+
+  if (progress) await update($, compass, c => ({ ...c, isJudging: true }))
+  const withGoal = hasCompass(mode) && before.goal !== null
   const res = await $.model.complete({
-    model: JUDGE_MODEL,
-    system: judgeSystem(cfg.intensity, canAsk),
-    prompt: judgePrompt(before, snap, known),
-    maxTokens: 700,
+    model: ask ? QUESTION_MODEL : PROGRESS_MODEL,
+    system: judgeSystem({ progress, ask, withGoal, intensity: cfg.intensity }),
+    prompt: judgePrompt(before, snap, known, withGoal),
+    maxTokens: ask ? 700 : 300,
     effort: 'low',
   })
   const verdict = res.isAnswered ? parseVerdict(res.text, snap.turn) : null
   const after = await update($, compass, c => {
-    const done = { ...c, isJudging: false }
-    if (!verdict) return { ...done, note: `T${snap.turn} 판정 실패` }
-    const next = { ...applyVerdict(done, snap.turn, verdict), note: '' }
-    if (!canAsk || !verdict.question || next.question) return next
+    let next: Compass = { ...c, isJudging: false }
+    if (progress) {
+      next = verdict ? { ...applyVerdict(next, snap.turn, verdict), note: '' } : { ...next, note: `T${snap.turn} 판정 실패` }
+    }
+    if (!ask || !verdict?.question || next.question) return next
 
     return { ...next, question: verdict.question, asked: next.asked + 1, lastAskTurn: snap.turn }
   })
   const last = after.steps[after.steps.length - 1]
-  if (last?.kind === 'arrive' && before.steps[before.steps.length - 1]?.kind !== 'arrive') {
+  if (progress && last?.kind === 'arrive' && before.steps[before.steps.length - 1]?.kind !== 'arrive') {
     $.ui.toast('🎯 목표에 도착했어요')
   }
+
+  return ask && after.question !== null && after.question.turn === snap.turn && before.question === null
 }
 
 async function reply($: EngineInterface, answer: string) {
@@ -487,7 +557,7 @@ function questionCard($: EngineInterface, els: Record<string, any>, q: GapQuesti
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="#c792ea" paddingX={1}>
       <Text bold color="#c792ea">
-        🧭 {KIND_LABEL[q.kind]} 점검
+        🔍 {KIND_LABEL[q.kind]} 점검
       </Text>
       <Text>{q.question}</Text>
       <Text dimColor>근거: "{q.quote}"</Text>
@@ -533,6 +603,102 @@ function proposalButtons($: EngineInterface, Button: any, Box: any) {
   )
 }
 
+// ---------- mode ----------
+
+// set_goal 같은 도구는 compass가 켜질 때만 모델에 보인다. 한 번 등록하면 세션 동안 남는다.
+let isToolsRegistered = false
+
+async function registerTools($: EngineInterface) {
+  if (isToolsRegistered) return
+  isToolsRegistered = true
+  await $.tool.register({
+    name: 'set_goal',
+    description:
+      '대화의 목표 카드를 저장한다. /compass 인터뷰가 끝나고 사용자가 카드를 확인했을 때만 호출한다.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        destination: { type: 'string', description: '도착점: 대화가 끝났을 때 손에 쥐고 있어야 할 것' },
+        done: { type: 'string', description: '"다 됐다"를 확인할 수 있는 기준' },
+        avoid: { type: 'string', description: '하지 말 것, 범위 밖' },
+        steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS, description: '도착까지 예상 걸음 수' },
+      },
+      required: ['destination', 'done', 'avoid', 'steps'],
+    },
+  })
+  await $.tool.register({
+    name: 'adjust_goal_height',
+    description:
+      '같은 방향에서 목표가 높아지거나 낮아질 때 걸음 수만 바꾼다. 사용자가 확인한 뒤에만 호출한다.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS },
+        reason: { type: 'string' },
+      },
+      required: ['steps', 'reason'],
+    },
+  })
+  await $.tool.register({
+    name: 'propose_goal_change',
+    description:
+      '목표의 방향이 바뀔 때 새 목표 카드를 제안한다. 바로 반영되지 않고, 사용자가 패널의 버튼으로 확정해야 반영된다.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        destination: { type: 'string' },
+        done: { type: 'string' },
+        avoid: { type: 'string' },
+        steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS },
+        carry: { type: 'integer', minimum: 0, description: '지금까지 한 일 중 새 목표에도 쓸모 있는 걸음 수' },
+        reason: { type: 'string' },
+      },
+      required: ['destination', 'done', 'avoid', 'steps', 'carry', 'reason'],
+    },
+  })
+}
+
+async function setMode($: EngineInterface, mode: ModeName) {
+  await update($, hackMode, () => ({ mode, isPicking: false }))
+  if (!hasCriteria(mode)) await update($, compass, c => ({ ...c, question: null }))
+  try {
+    await $.store.set(await storeKey($), mode)
+  } catch {
+    // 저장하지 못해도 이 세션에서는 고른 모드로 돈다.
+  }
+  if (hasCompass(mode)) {
+    await registerTools($)
+    if ((await read($, compass)).goal) void openPane($)
+  }
+  $.ui.toast(`hack-mode: ${MODE_LABEL[mode]}`)
+}
+
+function modePicker($: EngineInterface, els: Record<string, any>, current: ModeName) {
+  const { Box, Text, Button } = els
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="#7aa2f7" paddingX={1}>
+      <Text bold color="#7aa2f7">
+        hack-mode · 지금: {MODE_LABEL[current]}
+      </Text>
+      <Box flexDirection="row" gap={1}>
+        {MODES.map((m, i) => (
+          <Button
+            key={`mode-${m}`}
+            label={m === current ? `${MODE_LABEL[m]} ✓` : MODE_LABEL[m]}
+            hotkey={String(i + 1)}
+            onPress={() => setMode($, m)}
+          />
+        ))}
+      </Box>
+      <Text dimColor>compass: 목표 진척 · criteria: 빈 곳 질문 · 이 프로젝트에서 계속 유지돼요</Text>
+    </Box>
+  )
+}
+
 // ---------- module ----------
 
 export const register: Register = on => {
@@ -540,93 +706,89 @@ export const register: Register = on => {
   let prompts: string[] = []
   let tools: string[] = []
   let isSetupTurn = false
+  // /criteria-check가 점검할 마지막 턴.
+  let lastSnap: TurnSnapshot | null = null
+  isToolsRegistered = false
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'compass',
-      description: '대화 목표 정하기 · /compass 수정할 내용 · /compass reset · /compass show',
-      argumentHint: '[처음 생각 | 수정할 내용 | reset | show]',
-    })
-    await $.tool.register({
-      name: 'set_goal',
-      description:
-        '대화의 목표 카드를 저장한다. /compass 인터뷰가 끝나고 사용자가 카드를 확인했을 때만 호출한다.',
-      isDeferred: false,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          destination: { type: 'string', description: '도착점: 대화가 끝났을 때 손에 쥐고 있어야 할 것' },
-          done: { type: 'string', description: '"다 됐다"를 확인할 수 있는 기준' },
-          avoid: { type: 'string', description: '하지 말 것, 범위 밖' },
-          steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS, description: '도착까지 예상 걸음 수' },
-        },
-        required: ['destination', 'done', 'avoid', 'steps'],
-      },
-    })
-    await $.tool.register({
-      name: 'adjust_goal_height',
-      description:
-        '같은 방향에서 목표가 높아지거나 낮아질 때 걸음 수만 바꾼다. 사용자가 확인한 뒤에만 호출한다.',
-      isDeferred: false,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS },
-          reason: { type: 'string' },
-        },
-        required: ['steps', 'reason'],
-      },
-    })
-    await $.tool.register({
-      name: 'propose_goal_change',
-      description:
-        '목표의 방향이 바뀔 때 새 목표 카드를 제안한다. 바로 반영되지 않고, 사용자가 패널의 버튼으로 확정해야 반영된다.',
-      isDeferred: false,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          destination: { type: 'string' },
-          done: { type: 'string' },
-          avoid: { type: 'string' },
-          steps: { type: 'integer', minimum: 1, maximum: MAX_ROWS },
-          carry: { type: 'integer', minimum: 0, description: '지금까지 한 일 중 새 목표에도 쓸모 있는 걸음 수' },
-          reason: { type: 'string' },
-        },
-        required: ['destination', 'done', 'avoid', 'steps', 'carry', 'reason'],
-      },
-    })
-    const c = await read($, compass)
-    if (c.goal) void openPane($)
+    const commands = [
+      { name: 'hack-mode', description: 'mod 켜기와 모드 고르기: compass만 / criteria만 / 둘 다 / 끄기' },
+      { name: 'compass', description: '대화 목표 정하기 · 뒤에 글을 붙이면 목표 고치기', argumentHint: '[처음 생각 | 고칠 내용]' },
+      { name: 'compass-show', description: '지금 목표 보기' },
+      { name: 'compass-reset', description: '목표와 경로 지우기' },
+      { name: 'criteria-check', description: '지금 대화에서 빈 곳을 바로 점검해 질문 띄우기' },
+    ]
+    for (const command of commands) await $.command.register(command)
+
+    let mode: ModeName = 'off'
+    try {
+      const saved = await $.store.get(await storeKey($))
+      mode = MODES.find(m => m === saved) ?? 'off'
+    } catch {
+      // 저장소를 못 읽으면 꺼진 것으로 본다.
+    }
+    await update($, hackMode, m => ({ ...m, mode }))
+    if (hasCompass(mode)) {
+      await registerTools($)
+      if ((await read($, compass)).goal) void openPane($)
+    }
 
     return next(e)
   })
 
+  on('command.run', { command: 'hack-mode' }, async $ => {
+    const m = await update($, hackMode, cur => ({ ...cur, isPicking: true }))
+
+    return { text: `지금 모드: ${MODE_LABEL[m.mode]}. 입력창 위에서 고르세요.` }
+  })
+
   on('command.run', { command: 'compass' }, async ($, e) => {
+    if (!hasCompass((await read($, hackMode)).mode)) return { text: offText('compass') }
     const args = e.args.trim()
     const c = await read($, compass)
-
-    if (args === 'reset') {
-      await update($, compass, () => EMPTY)
-
-      return { text: '목표와 경로를 지웠어요. /compass 로 새로 시작하세요.' }
-    }
     await openPane($)
-    if (args === 'show') {
-      return { text: c.goal ? `목표: ${c.goal.destination}` : '아직 목표가 없어요.' }
-    }
     if (c.goal && args) {
       await $.prompt.submit({ text: changePrompt(c.goal, args) })
 
       return { text: '목표 수정을 시작해요.' }
     }
     if (c.goal) {
-      return {
-        text: `지금 목표: ${c.goal.destination}\n수정은 /compass 수정할 내용, 초기화는 /compass reset`,
-      }
+      return { text: `지금 목표: ${c.goal.destination}\n고치기는 /compass 고칠 내용, 지우기는 /compass-reset` }
     }
     await $.prompt.submit({ text: interviewPrompt(args) })
 
     return { text: '목표 정하기 인터뷰를 시작해요.' }
+  })
+
+  on('command.run', { command: 'compass-show' }, async $ => {
+    if (!hasCompass((await read($, hackMode)).mode)) return { text: offText('compass') }
+    const c = await read($, compass)
+    if (!c.goal) return { text: '아직 목표가 없어요. /compass 로 정하세요.' }
+    await openPane($)
+
+    return { text: `목표: ${c.goal.destination}\n다 됐다: ${c.goal.done}\n하지 말 것: ${c.goal.avoid}` }
+  })
+
+  on('command.run', { command: 'compass-reset' }, async $ => {
+    // 목표와 경로만 지운다. criteria 질문 횟수는 세션 동안 그대로 센다.
+    await update($, compass, c => ({
+      ...EMPTY,
+      turn: c.turn,
+      question: c.question,
+      asked: c.asked,
+      lastAskTurn: c.lastAskTurn,
+    }))
+
+    return { text: '목표와 경로를 지웠어요. /compass 로 새로 시작하세요.' }
+  })
+
+  on('command.run', { command: 'criteria-check' }, async $ => {
+    if (!hasCriteria((await read($, hackMode)).mode)) return { text: offText('criteria') }
+    if ((await read($, compass)).question) return { text: '입력창 위에 답하지 않은 질문이 있어요.' }
+    if (!lastSnap) return { text: '아직 점검할 턴이 없어요.' }
+    const isAsked = await judge($, lastSnap, true)
+
+    return { text: isAsked ? '입력창 위에 질문을 띄웠어요.' : '지금 대화에서는 물을 빈 곳을 찾지 못했어요.' }
   })
 
   on('tool.call', { tool: 'mcp__hack-users-for-llms__set_goal' }, async ($, e) => {
@@ -706,15 +868,19 @@ export const register: Register = on => {
     return next(e)
   })
 
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const c = await read($, compass)
 
+    if (!hasCompass((await read($, hackMode)).mode)) {
+      return <Text dimColor>compass가 꺼져 있어요. /hack-mode에서 켜세요.</Text>
+    }
     if (!c.goal) {
       return (
         <Box flexDirection="column" gap={1}>
           <Text bold>아직 목표가 없어요</Text>
-          <Text dimColor>/compass 을 입력하면 질문을 하나씩 드리면서 이 대화의 도착점을 정해요.</Text>
+          <Text dimColor>/compass 를 입력하면 질문을 하나씩 드리면서 이 대화의 도착점을 정해요.</Text>
           <Button
             key="start"
             label="목표 정하기"
@@ -797,8 +963,7 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (e.command) return next(e)
     prompts.push(e.text)
-    const c = await read($, compass)
-    if (!c.goal) return next(e)
+    if (!hasCriteria((await read($, hackMode)).mode)) return next(e)
 
     return next({ ...e, context: [...(e.context ?? []), SESSION_NOTE] })
   })
@@ -826,7 +991,8 @@ export const register: Register = on => {
     snap.turn = c.turn
 
     // Judge outside this dispatch, so the turn ends without waiting on the model.
-    if (c.goal && !wasSetup && e.reason === 'answer') {
+    if (!wasSetup && e.reason === 'answer') {
+      if (snap.prompt.trim()) lastSnap = snap
       $.clock.after(1, () => {
         void judge($, snap)
       })
@@ -835,15 +1001,18 @@ export const register: Register = on => {
     return result
   })
 
-  // 입력창 위 자리는 하나다. 질문 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
+  // 입력창 위 자리는 하나다. 모드 고르기 > 질문 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const c = await read($, compass)
-    if (!c.goal) return next(e)
+    const m = await read($, hackMode)
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
+    if (m.isPicking) return modePicker($, els, m.mode)
+    if (m.mode === 'off') return next(e)
 
-    if (c.question) return questionCard($, els, c.question)
+    const c = await read($, compass)
+    if (hasCriteria(m.mode) && c.question) return questionCard($, els, c.question)
+    if (!hasCompass(m.mode) || !c.goal) return next(e)
 
     if (c.proposal) {
       return (

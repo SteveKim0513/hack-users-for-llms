@@ -8,7 +8,7 @@ description: 위임 전 기준 점검 훅을 켜고, 끄고, 상태를 본다. �
 훅은 사용자가 일을 맡기는 요청(필터해줘, 기획해줘 등)을 보낼 때 기록소를 조회해, 확정 기준이 있으면 그 기준을 Claude에게 알려 주고 없으면 작업 전에 묻게 한다.
 **훅은 `hack-users-for-llms` 플러그인에 들어 있고 기본은 꺼져 있다.** 이 스킬은 스위치(설정 파일)만 바꾼다. 사용자의 `settings.json`은 건드리지 않는다.
 
-같은 플러그인의 `/compass`(mod)도 이 설정 파일을 읽는다. `/compass`로 목표를 정한 세션에서는 빈 곳을 묻는 일을 compass가 입력창 위 질문 카드로 맡고, 그때 `intensity`, `max_per_session`, `cooldown_turns`가 그 질문에 쓰인다. 켜고 끄는 것은 `/compass`가 하므로 `enabled`와 상관없다. 설정 파일이 없으면 기본값을 쓴다.
+같은 플러그인의 criteria 점검 mod도 이 설정 파일을 읽는다. Claude Code에서 `/hack-mode`로 criteria를 켠 세션에서는 빈 곳을 묻는 일을 mod가 입력창 위 질문 카드로 맡고, 그때 `intensity`, `max_per_session`, `cooldown_turns`가 그 질문에 쓰인다. mod를 켜고 끄는 것은 `/hack-mode`가 하므로 `enabled`와 상관없다. 설정 파일이 없으면 기본값을 쓴다.
 
 ## 전제
 - 훅은 **Claude Code에 플러그인으로 설치한 경우에만** 동작한다. Codex나 폴더 링크로 설치한 경우 설정 파일은 써지지만 훅은 동작하지 않는다. 이 경우 그렇게 알린다.
@@ -25,7 +25,7 @@ description: 위임 전 기준 점검 훅을 켜고, 끄고, 상태를 본다. �
 |---|---|---|
 | `enabled` | `false` | `true`일 때만 동작 |
 | `intensity` | `light` | `light`: 위임 요청이면서 신호(세션 첫 위임, 방향을 바꾸는 결정, 긴 산출물)가 있을 때만. `active`: 위임 요청이면 항상 |
-| `max_per_session` | `3` | 세션당 "기준을 물어라" 개입 최대 횟수. `/compass` 세션에서는 질문 카드 최대 수(0이면 묻지 않음). 확정 기준을 알려 주는 것은 이 한도와 무관 |
+| `max_per_session` | `3` | 세션당 "기준을 물어라" 개입 최대 횟수. criteria 점검 mod에서는 질문 카드 최대 수(0이면 묻지 않음). 확정 기준을 알려 주는 것은 이 한도와 무관 |
 | `cooldown_turns` | `3` | 개입 후 최소 몇 요청 뒤에 다시 개입할지 |
 
 ## 켜기 (init)

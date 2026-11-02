@@ -31,6 +31,8 @@ const turnEnd = (n: number, answer: string) => ({
 
 test('a goal, two judged turns and a confirmed pivot draw on every surface', async ($, on) => {
   const clock = mock.clock(on)
+  on('session.root', () => ({ value: '/proj' }))
+  on('store.get', (_, e) => ({ value: e.key === 'mode:/proj' ? 'compass' : undefined }))
   const verdicts = [
     '{"move":"up","reason":"구조 결정","done":false,"pivot":false,"new_destination":"","carry":0}',
     '{"move":"down","reason":"범위 밖 디자인 논의","done":false,"pivot":true,"new_destination":"앱 화면 시안","carry":1}',
@@ -81,13 +83,18 @@ test('a goal, two judged turns and a confirmed pivot draw on every surface', asy
 
 test('no goal: the pane offers to start, and turns are not judged', async ($, on) => {
   const clock = mock.clock(on)
+  on('session.root', () => ({ value: '/proj' }))
+  on('store.get', (_, e) => ({ value: e.key === 'mode:/proj' ? 'compass' : undefined }))
   let calls = 0
+  on('command.register', () => ({ value: { command: 'compass' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('model.complete', () => {
     calls += 1
 
     return { value: { isAnswered: true, text: '{}', usage: USAGE } }
   })
+  await $.session.start({ cwd: '/proj', surface: 'vscode', isInteractive: true })
   await $.turn.complete(turnEnd(1, 'hello'))
   await clock.advance(10)
   expect(calls).toBe(0)

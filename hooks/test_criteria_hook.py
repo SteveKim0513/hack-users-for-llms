@@ -99,13 +99,13 @@ class HookTest(unittest.TestCase):
                      encoding="utf-8")
         self.assertIsNotNone(self.run_hook("1차 자료만 쓰고 광고글은 빼서 기획해줘 부탁", transcript=t))
 
-    def test_compass_answer_is_left_alone(self):
+    def test_criteria_check_answer_is_left_alone(self):
         self.config(enabled=True, intensity="active")
-        self.assertIsNone(self.run_hook("[compass 점검 답변]\n질문: 소스를 필터할 기준은?\n내 답: 1차 자료만"))
+        self.assertIsNone(self.run_hook("[criteria 점검 답변]\n질문: 소스를 필터할 기준은?\n내 답: 1차 자료만"))
 
-    def test_asking_defers_to_compass(self):
+    def test_asking_defers_to_hack_mode(self):
         self.config(enabled=True, intensity="active")
-        self.assertIn("compass가 맡는다", self.run_hook("매거진 소스를 필터해줘 부탁합니다"))
+        self.assertIn("그 mod가 맡는다", self.run_hook("매거진 소스를 필터해줘 부탁합니다"))
 
     def test_unreadable_transcript_does_not_block(self):
         self.config(enabled=True, intensity="active")

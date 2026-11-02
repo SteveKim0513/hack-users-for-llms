@@ -57,8 +57,13 @@ export type GapQuestion = {
   turn: number
 }
 
+// Which of the two mods /hack-mode turned on, and whether its picker is up.
+export type ModeName = 'off' | 'compass' | 'criteria' | 'both'
+
+export type HackMode = { mode: ModeName; isPicking: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
-    'hack-users-for-llms': { compass: Shaped<Compass> }
+    'hack-users-for-llms': { compass: Shaped<Compass>; mode: Shaped<HackMode> }
   }
 }

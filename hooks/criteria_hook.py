@@ -244,8 +244,8 @@ def build_context(event, home=None, data_dir=None, today=None):
     cfg = load_config(project_dir, global_dir if global_dir.is_dir() else None)
     if cfg["enabled"] is not True:
         return None
-    # compass 점검 질문에 대한 답은 compass가 다룬다
-    if len(prompt) < 10 or prompt.startswith(("/", "[compass 점검 답변]")):
+    # hack-mode criteria 점검 질문에 대한 답은 그 mod가 다룬다
+    if len(prompt) < 10 or prompt.startswith(("/", "[criteria 점검 답변]")):
         return None
 
     spath = state_file(event.get("session_id"), data_dir)
@@ -295,8 +295,8 @@ def build_context(event, home=None, data_dir=None, today=None):
         if strong:
             lines.append("이 요청에 필요한 판단 기준이 위에 없다. 이 프로젝트의 규칙은 criteria-gap 스킬의 절차에 따라 "
                          "작업 전에 막는 기준 하나만 사용자에게 묻는 것이다. 사용자가 '일단 진행'을 고르면 임시 기준으로 "
-                         "진행하되 임시 기준임을 밝히고 저장하지 않는다. 단, 이 세션에 [compass] 목표가 정해져 있으면 "
-                         "묻는 일은 compass가 맡는다.")
+                         "진행하되 임시 기준임을 밝히고 저장하지 않는다. 단, 이 세션에 [hack-mode] criteria 점검이 "
+                         "켜져 있으면 묻는 일은 그 mod가 맡는다.")
         elif hit:
             lines.append("위 기준이 이 요청의 판단을 모두 다루지 않으면 빠진 기준을 작업 전에 확인하는 것이 규칙이다.")
         return "\n".join(lines)[:4000]

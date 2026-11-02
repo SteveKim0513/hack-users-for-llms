@@ -54,23 +54,36 @@ const turnEnd = (n: number, answer: string) => ({
   reason: 'answer' as const,
 })
 
-// Stands for the engine beneath the plugin: a project at /proj, HOME at /home,
-// files from `files`, the judge answering from `verdicts`; records what the plugin sends.
-function engine(on: On, files: Record<string, string>, verdicts: string[]) {
+type Call = { model: string; system: string }
+
+// Stands for the engine beneath the plugin: a project at /proj, HOME at /home, files
+// from `files`, a store holding `mode` for /proj, the judge answering from `verdicts`.
+function engine(on: On, opts: { mode?: string; files?: Record<string, string>; verdicts?: string[] }) {
+  const files = opts.files ?? {}
+  const verdicts = [...(opts.verdicts ?? [])]
+  const store: Record<string, unknown> = opts.mode ? { 'mode:/proj': opts.mode } : {}
   const sent: { text: string; context: readonly string[] }[] = []
-  const systems: string[] = []
+  const calls: Call[] = []
   mock.env(on, { HOME: '/home' })
   on('session.cwd', () => ({ value: '/proj' }))
+  on('session.root', () => ({ value: '/proj' }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'compass' } }))
+  on('store.get', (_, e) => ({ value: store[e.key] }))
+  on('store.set', (_, e) => {
+    store[e.key] = e.value
+
+    return { value: undefined }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__hack-users-for-llms__${e.name}` } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
   on('fs.exists', (_, e) => ({
     value: Object.keys(files).some(p => p === e.path || p.startsWith(`${e.path}/`)),
   }))
   on('fs.read', (_, e) => ({ value: files[e.path] ?? '' }))
   on('model.complete', (_, e) => {
-    systems.push(e.system ?? '')
+    calls.push({ model: e.model, system: e.system ?? '' })
 
     return { value: { isAnswered: true, text: verdicts.shift() ?? NONE, usage: USAGE } }
   })
@@ -80,6 +93,7 @@ function engine(on: On, files: Record<string, string>, verdicts: string[]) {
     return { text: e.text }
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('command.run', () => ({ text: 'engine' }))
   // The engine's own band, drawn when the plugin has nothing to show.
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -87,11 +101,24 @@ function engine(on: On, files: Record<string, string>, verdicts: string[]) {
     return <Text>engine</Text>
   })
 
-  return { sent, systems }
+  return { sent, calls, store }
 }
 
-async function setGoal($: any, clock: any) {
+const asks = (c: Call | undefined) => !!c?.system.includes('## 빈 곳 점검')
+
+async function start($: any) {
   await $.session.start({ cwd: '/proj', surface: 'vscode', isInteractive: true })
+}
+
+async function turn($: any, clock: any, n: number, prompt: string) {
+  await $.prompt.submit({ text: prompt })
+  await $.turn.complete(turnEnd(n, '답변'))
+  await clock.advance(10)
+}
+
+const run = ($: any, command: string, args = '') => $.command.run({ command, args })
+
+async function setGoal($: any, clock: any) {
   await $.tool.call({
     tool: 'mcp__hack-users-for-llms__set_goal',
     destination: '이탈 분석 보고서',
@@ -103,35 +130,52 @@ async function setGoal($: any, clock: any) {
   await clock.advance(10)
 }
 
-async function turn($: any, clock: any, n: number, prompt: string) {
-  await $.prompt.submit({ text: prompt })
-  await $.turn.complete(turnEnd(n, '답변'))
-  await clock.advance(10)
-}
-
-const config = (hook: Record<string, unknown>) => ({
-  '/proj/.criteria/config.json': JSON.stringify({ hook }),
-})
-
-test('no goal: no judge call, no question, no session note', async ($, on) => {
+test('off by default: no judge call, no note, and the commands say how to turn on', async ($, on) => {
   const clock = mock.clock(on)
-  const eng = engine(on, {}, [CHOICE])
+  const eng = engine(on, { verdicts: [CHOICE] })
+  await start($)
   await turn($, clock, 1, '사용자 이탈 원인을 정리해줘')
-  expect(eng.systems.length).toBe(0)
+  expect(eng.calls.length).toBe(0)
   expect(eng.sent[0]?.context.length).toBe(0)
+  expect((await run($, 'compass')).text).toContain('/hack-mode')
+  expect((await run($, 'criteria-check')).text).toContain('/hack-mode')
 
   const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
   expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
   await ui.unmount()
 })
 
-test('with a goal, one judge call moves the board and asks; an option answers it', async ($, on) => {
+test('/hack-mode shows the picker; a pick is kept for this project', async ($, on) => {
+  const eng = engine(on, {})
+  await start($)
+  await run($, 'hack-mode')
+
+  for (const surface of ['terminal', 'vscode', 'desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: /hack-mode · 지금: 끄기/ })).toBeTruthy()
+    expect(await ui.find({ key: 'mode-both' })).toBeTruthy()
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  await ui.press({ key: 'mode-criteria' })
+  await ui.unmount()
+  expect(eng.store['mode:/proj']).toBe('criteria')
+
+  const after = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await after.find({ key: 'mode-both' })).toBeFalsy()
+  await after.unmount()
+})
+
+test('criteria only: no goal needed; a choice question appears and an option answers it', async ($, on) => {
   const clock = mock.clock(on)
-  const eng = engine(on, {}, [CHOICE])
-  await setGoal($, clock)
+  const eng = engine(on, { mode: 'criteria', verdicts: [CHOICE] })
+  await start($)
   await turn($, clock, 1, '사용자 이탈 원인을 정리해줘')
-  expect(eng.systems.length).toBe(1)
-  expect(eng.sent.at(-1)?.context.join('')).toContain('[compass]')
+  expect(eng.calls.map(c => c.model)).toEqual(['sonnet'])
+  expect(asks(eng.calls[0])).toBe(true)
+  expect(eng.calls[0]?.system).not.toContain('## 진척 판정')
+  expect(eng.sent.at(-1)?.context.join('')).toContain('[hack-mode]')
 
   for (const surface of ['terminal', 'vscode', 'desktop', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
@@ -143,72 +187,75 @@ test('with a goal, one judge call moves the board and asks; an option answers it
   }
 
   const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
-  expect(await ui.find({ key: 'gap-free' })).toBeTruthy()
   await ui.press({ key: 'gap-opt-1' })
   await ui.unmount()
-
-  const answer = eng.sent.find(s => s.text.startsWith('[compass 점검 답변]'))?.text ?? ''
+  const answer = eng.sent.find(s => s.text.startsWith('[criteria 점검 답변]'))?.text ?? ''
   expect(answer).toContain('점검 종류: 구분')
   expect(answer).toContain('내 답: 결제 고객')
   expect(answer).toContain('근거로 본 내 말: "사용자 이탈 원인을 정리해줘"')
-
-  const after = await $.ui.mount({ ...BAND, surface: 'vscode' })
-  expect(await after.find({ type: 'Text', text: /가입자인가요/ })).toBeFalsy()
-  await after.unmount()
 })
 
-test('a free-text question is answered in the field', async ($, on) => {
+test('compass only: progress on the light model, no question, no note', async ($, on) => {
   const clock = mock.clock(on)
-  const eng = engine(on, {}, [FREE])
+  const eng = engine(on, { mode: 'compass', verdicts: [CHOICE] })
+  await start($)
+  await setGoal($, clock)
+  await turn($, clock, 1, '사용자 이탈 원인을 정리해줘')
+  expect(eng.calls.map(c => c.model)).toEqual(['haiku'])
+  expect(asks(eng.calls[0])).toBe(false)
+  expect(eng.sent.at(-1)?.context.length).toBe(0)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await ui.find({ key: 'gap-free' })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('both: one call judges progress and asks against the goal; the field answers it', async ($, on) => {
+  const clock = mock.clock(on)
+  const eng = engine(on, { mode: 'both', verdicts: [FREE] })
+  await start($)
   await setGoal($, clock)
   await turn($, clock, 1, '매거진 기획해줘')
+  expect(eng.calls.length).toBe(1)
+  expect(eng.calls[0]?.model).toBe('sonnet')
+  expect(eng.calls[0]?.system).toContain('## 진척 판정')
+  expect(eng.calls[0]?.system).toContain('목표와 "다 됐다"의 기준에 비추어')
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.find({ key: 'gap-opt-0' })).toBeFalsy()
   await ui.input({ key: 'gap-free', text: '처음 육아하는 30대 부모' })
   await ui.unmount()
-
   expect(eng.sent.at(-1)?.text).toContain('내 답: 처음 육아하는 30대 부모')
   expect(eng.sent.at(-1)?.text).toContain('점검 종류: 생략된 전제')
 })
 
 test('cooldown and the session cap from the criteria config hold', async ($, on) => {
   const clock = mock.clock(on)
-  const eng = engine(on, config({ intensity: 'active', max_per_session: 2, cooldown_turns: 1 }), [
-    CHOICE,
-    CHOICE,
-    FREE,
-    CHOICE,
-    CHOICE,
-  ])
-  await setGoal($, clock)
-  const canAsk = () => !eng.systems.at(-1)?.includes('이번 턴은 묻지 않는다')
+  const config = { '/proj/.criteria/config.json': JSON.stringify({ hook: { max_per_session: 2, cooldown_turns: 1 } }) }
+  const eng = engine(on, { mode: 'criteria', files: config, verdicts: [CHOICE, FREE] })
+  await start($)
 
   await turn($, clock, 1, '사용자 이탈 원인을 정리해줘')
-  expect(canAsk()).toBe(true)
   const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
   await ui.press({ key: 'gap-skip' })
   await ui.unmount()
-
   await turn($, clock, 2, '다음 단계로 가자')
-  expect(canAsk()).toBe(false)
   await turn($, clock, 3, '매거진 기획해줘')
-  expect(canAsk()).toBe(true)
   const second = await $.ui.mount({ ...BAND, surface: 'vscode' })
   await second.press({ key: 'gap-skip' })
   await second.unmount()
-
   await turn($, clock, 4, '계속')
   await turn($, clock, 5, '계속')
-  expect(canAsk()).toBe(false)
-  expect(eng.systems.length).toBe(5)
+  // criteria only: a turn with nothing to ask makes no call at all.
+  expect(eng.calls.length).toBe(2)
 })
 
 test('a verdict without the user quote asks nothing; an unanswered question expires', async ($, on) => {
   const clock = mock.clock(on)
   const noQuote = JSON.stringify({ ...JSON.parse(FREE), quote: '' })
-  engine(on, config({ cooldown_turns: 0 }), [noQuote, FREE])
-  await setGoal($, clock)
+  const config = { '/proj/.criteria/config.json': JSON.stringify({ hook: { cooldown_turns: 0 } }) }
+  engine(on, { mode: 'criteria', files: config, verdicts: [noQuote, FREE] })
+  await start($)
   await turn($, clock, 1, '매거진 기획해줘')
   const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
   expect(await ui.find({ key: 'gap-free' })).toBeFalsy()
@@ -225,10 +272,18 @@ test('a verdict without the user quote asks nothing; an unanswered question expi
   await gone.unmount()
 })
 
-test('a broken config reads as the defaults', async ($, on) => {
+test('/criteria-check asks now, past the cooldown', async ($, on) => {
   const clock = mock.clock(on)
-  const eng = engine(on, { '/proj/.criteria/config.json': '{not json' }, [CHOICE])
-  await setGoal($, clock)
+  const config = { '/proj/.criteria/config.json': JSON.stringify({ hook: { cooldown_turns: 5 } }) }
+  const eng = engine(on, { mode: 'criteria', files: config, verdicts: [NONE, CHOICE] })
+  await start($)
+  expect((await run($, 'criteria-check')).text).toContain('아직 점검할 턴이 없어요')
+
   await turn($, clock, 1, '사용자 이탈 원인을 정리해줘')
-  expect(eng.systems.at(-1)).toContain('애매하면 묻지 않는다')
+  expect((await run($, 'criteria-check')).text).toContain('질문을 띄웠어요')
+  expect(eng.calls.length).toBe(2)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await ui.find({ type: 'Text', text: /가입자인가요/ })).toBeTruthy()
+  await ui.unmount()
 })
