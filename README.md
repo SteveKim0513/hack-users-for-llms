@@ -20,7 +20,6 @@ git clone https://github.com/SteveKim0513/hack-users-for-llms.git ~/hack-users-f
 mkdir -p ~/.agents/skills
 ln -s ~/hack-users-for-llms/skills/criteria ~/.agents/skills/criteria
 ln -s ~/hack-users-for-llms/skills/criteria-gap ~/.agents/skills/criteria-gap
-ln -s ~/hack-users-for-llms/skills/session-profile ~/.agents/skills/session-profile
 ```
 설치 후 스킬이 안 보이면 Codex를 재시작한다.
 
@@ -48,7 +47,6 @@ ln -s ~/hack-users-for-llms/skills/<스킬이름> ~/.claude/skills/<스킬이름
 | `criteria` | 합의한 판단 기준을 기록·조회·변경하는 기준 기록소. |
 | `criteria-init` | 위임 전 기준 점검 훅을 켜고 끄는 스위치 (Claude Code 플러그인 전용) |
 | `criteria-gap` | 대화에서 기준 공백을 찾아 대화로 묻고, AI의 암묵 기준과 비교해 재요청 (`criteria` 필요) |
-| `session-profile` | 로컬 세션 기록(Claude Code·Codex)의 사용자 요청을 지시·질문·진행으로 나누고, 지시와 질문은 그 글의 질을, 진행(그냥 넘어감)은 넘어간 내용을 지금 아는지 서술형 확인 질문으로, 문해력은 지문을 읽고 가린 뒤 답하는 과제로 재서 논리력·이해력·표현·문해력 점수와 종합 점수, 연습 하나를 본인에게만 준다. 사용자는 약 15분 답한다. 결과는 저장소 밖에 저장. Python 3과 서브에이전트 필요. 이 구성으로 실제 사람에게 끝까지 돌려 보지 않았고, Codex 기록도 확인하지 못함 |
 
 ## 위임 전 점검 훅 (Claude Code 전용, 기본 꺼짐)
 
@@ -59,5 +57,4 @@ ln -s ~/hack-users-for-llms/skills/<스킬이름> ~/.claude/skills/<스킬이름
 
 ```bash
 cd hooks && python3 -m unittest -v test_criteria_hook
-cd skills/session-profile/scripts && python3 -m unittest -v test_extract_sessions test_score
 ```
