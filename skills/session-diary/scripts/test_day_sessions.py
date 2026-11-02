@@ -335,6 +335,18 @@ class QuoteTest(unittest.TestCase):
     def test_quote_from_an_earlier_diary_is_not_wrong(self):
         self.assertEqual(cq.problems("「어제 한 말」", "[10:00 나] 오늘\n", "지난 일기: 「어제 한 말」(09:00)")[1], [])
 
+    def test_broken_reference_numbers_are_removed_from_the_body(self):
+        diary = "본문이다[1] 그리고 또[2].\n\n## 근거\n[1] 일: 「말」(10:00)\n"
+        self.assertEqual(cq.drop_broken_refs(diary), "본문이다[1] 그리고 또.\n\n## 근거\n[1] 일: 「말」(10:00)\n")
+
+    def test_references_are_renumbered_in_reading_order(self):
+        diary = "앞[6] 뒤[2][6].\n\n## 근거\n[2] 나중: 「둘」(10:01)\n[6] 먼저: 「하나」(10:00)\n[9] 안 씀: 「셋」(10:02)\n\n---\n끝\n"
+        self.assertEqual(cq.renumber_refs(diary),
+                         "앞[1] 뒤[2][1].\n\n## 근거\n[1] 먼저: 「하나」(10:00)\n[2] 나중: 「둘」(10:01)\n[3] 안 씀: 「셋」(10:02)\n\n---\n끝\n")
+
+    def test_without_an_evidence_section_all_numbers_go(self):
+        self.assertEqual(cq.drop_broken_refs("본문이다 [1]."), "본문이다.")
+
     def test_heading_inside_a_turn_does_not_cut_it(self):
         material = "## 세션 p · C · 10:00~10:05 · 내 발화 1개\n[10:00 AI] 앞\n## 소제목\n뒤에 있는 문장\n"
         self.assertEqual(cq.problems("「뒤에 있는 문장」(10:00 AI)", material), (1, []))

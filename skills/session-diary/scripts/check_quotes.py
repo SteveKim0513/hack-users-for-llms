@@ -48,6 +48,35 @@ def repair(diary, material):
     return QUOTE_RE.sub(fix, diary)
 
 
+def drop_broken_refs(diary):
+    """본문의 [n] 중 근거 칸에 없는 번호를 지운다. 틀린 인용을 지운 뒤에 남는 번호가 독자를 헤매게 하지 않도록."""
+    head, mark, tail = diary.partition("\n## 근거")
+    if not mark:
+        return re.sub(r" ?\[\d+\]", "", head)
+    listed = set(re.findall(r"^\[(\d+)\]", tail, flags=re.M))
+    return re.sub(r" ?\[(\d+)\]", lambda m: m.group(0) if m.group(1) in listed else "", head) + mark + tail
+
+
+def renumber_refs(diary):
+    """본문에 나온 순서대로 번호를 1부터 다시 매기고 근거 칸도 그 순서로 줄 세운다. 본문에서 안 쓴 근거는 뒤로 보낸다."""
+    head, mark, tail = diary.partition("\n## 근거")
+    if not mark:
+        return diary
+    lines = tail.split("\n")
+    items = [i for i, line in enumerate(lines) if re.match(r"\[\d+\]", line)]
+    if not items:
+        return diary
+    order = list(dict.fromkeys(re.findall(r"\[(\d+)\]", head)))
+    listed = [re.match(r"\[(\d+)\]", lines[i]).group(1) for i in items]
+    order = [n for n in order if n in listed] + [n for n in listed if n not in order]
+    new = {old: str(i + 1) for i, old in enumerate(order)}
+    head = re.sub(r"\[(\d+)\]", lambda m: "[%s]" % new.get(m.group(1), m.group(1)), head)
+    by_old = {re.match(r"\[(\d+)\]", lines[i]).group(1): lines[i] for i in items}
+    for slot, old in zip(items, order):
+        lines[slot] = re.sub(r"\A\[\d+\]", "[%s]" % new[old], by_old[old])
+    return head + mark + "\n".join(lines)
+
+
 def problems(diary, material, earlier=""):
     """(인용 수, [(문제, 인용)]). earlier에 그대로 있는 인용은 지난 일기의 말이라 재료에 없어도 틀리지 않다."""
     turns = turns_of(material)

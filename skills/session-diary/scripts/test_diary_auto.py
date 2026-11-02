@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import diary_auto as da
 
@@ -35,6 +36,10 @@ class Base(unittest.TestCase):
                           SESSION_DIARY_CODEX_DIR=str(self.root / "codex"), SESSION_DIARY_LABEL="test.label")
         time.tzset()
         self.home.mkdir()
+        # 시험이 실제 알림을 띄우지 않게 한다.
+        patcher = mock.patch.object(da, "send_notification")
+        self.notifications = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -295,11 +300,61 @@ class StatisticsTest(Base):
         self.state(since=D3, replies=[reply])
         da.tick(TODAY)
         text = self.diary(D3)
-        self.assertLess(text.index("## 통계"), text.index("## 내 메모"))
+        self.assertIn("## 통계", text)
         self.assertLess(text.index("tokens_out: 5"), text.index("# 일기"))
         self.assertIn("이 일기를 쓰는 데 든 것", text)
         self.assertIn("약 $0.01", text)
         self.assertEqual(text.count("---\n"), 2)
+
+    def test_statistics_go_after_evidence_and_before_the_footer(self):
+        self.write_rows("proj/s1.jsonl", [user_row(D3), self.assistant(D3, "m1", 5)])
+        reply = ("---\ndate: x\n---\n\n# 일기\n\n필터를 맡겼다[1].\n\n## 내 메모\n(직접 적는 칸.)\n\n"
+                 "## 근거\n[1] 맡긴 일: 「소스를 필터해줘」(10:00)\n\n---\n뺀 세션: 0개\n")
+        self.state(since=D3, replies=[reply])
+        da.tick(TODAY)
+        text = self.diary(D3)
+        self.assertLess(text.index("## 내 메모"), text.index("## 근거"))
+        self.assertLess(text.index("## 근거"), text.index("## 통계"))
+        self.assertLess(text.index("## 통계"), text.index("뺀 세션"))
+        self.assertIn("필터를 맡겼다[1]", text)
+
+    def test_memo_ends_at_the_next_heading(self):
+        diary = "# 일기\n\n## 내 메모\n이 평가는 틀렸다\n\n## 근거\n[1] 일: 「말」(10:00)\n"
+        self.assertEqual(da.last_memo([diary]), "이 평가는 틀렸다")
+
+    def test_written_diary_notifies_with_the_plan(self):
+        self.session(D3)
+        reply = '---\ndate: x\nplan: "완료 보고를 받으면 직접 열어 본다"\n---\n\n# 일기\n'
+        self.state(since=D3, replies=[reply])
+        da.tick(TODAY)
+        title, body = self.notifications.call_args.args
+        self.assertEqual(title, "세션 일기")
+        self.assertIn("10월 3일 일기를 썼어요", body)
+        self.assertIn("완료 보고를 받으면 직접 열어 본다", body)
+
+    def test_day_without_conversation_does_not_notify(self):
+        self.state(since=D3)
+        da.tick(TODAY)
+        self.notifications.assert_not_called()
+
+    def test_a_run_that_will_retry_does_not_notify_but_giving_up_does(self):
+        self.session(D3)
+        self.state(since=D3, replies=["ERROR"])
+        da.tick(TODAY)
+        self.notifications.assert_not_called()
+        for _ in range(da.MAX_ATTEMPTS - 1):
+            da.tick(TODAY)
+        self.assertIn("쓰지 못했어요", self.notifications.call_args.args[1])
+
+    def test_notification_text_is_passed_as_an_argument_not_as_code(self):
+        mock.patch.stopall()
+        evil = 'x" & (do shell script "touch /tmp/pwn") & "'
+        with mock.patch.object(da.sys, "platform", "darwin"), mock.patch.object(da.subprocess, "run") as run:
+            da.send_notification("세션 일기", evil)
+        cmd = run.call_args.args[0]
+        code = [cmd[i + 1] for i, part in enumerate(cmd) if part == "-e"]
+        self.assertFalse(any("pwn" in line for line in code))
+        self.assertEqual(cmd[-1], evil)
 
     def test_day_without_conversation_still_reports_automated_tokens_and_no_ai_cost(self):
         self.write_rows("proj/auto.jsonl", [user_row(D3, sid="auto", cwd="/tmp/x"), self.assistant(D3, "m4", 13, sid="auto", cwd="/tmp/x")])
