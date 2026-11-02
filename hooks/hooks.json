@@ -1,5 +1,5 @@
 {
-  "description": "위임 전 기준 점검(명령 훅, criteria-init으로 켠 곳에서만)과 compass·criteria mod(/hack-mode로 켠 곳에서만). 꺼져 있으면 아무것도 하지 않는다.",
+  "description": "위임 전 기준 점검(명령 훅, criteria-init으로 켠 곳에서만)과 compass·criteria·세션 일기 mod(/hack-mode로 켠 곳에서만). 꺼져 있으면 아무것도 하지 않는다.",
   "hooks": {
     "UserPromptSubmit": [
       {

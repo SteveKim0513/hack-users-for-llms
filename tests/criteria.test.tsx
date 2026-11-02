@@ -58,12 +58,32 @@ type Call = { model: string; system: string }
 
 // Stands for the engine beneath the plugin: a project at /proj, HOME at /home, files
 // from `files`, a store holding `mode` for /proj, the judge answering from `verdicts`.
-function engine(on: On, opts: { mode?: string; files?: Record<string, string>; verdicts?: string[] }) {
+type DiaryOpts = { isOn?: boolean; isTodayWritten?: boolean; isOnRefused?: boolean }
+
+function engine(on: On, opts: { mode?: string; files?: Record<string, string>; verdicts?: string[]; diary?: DiaryOpts }) {
   const files = opts.files ?? {}
   const verdicts = [...(opts.verdicts ?? [])]
   const store: Record<string, unknown> = opts.mode ? { 'mode:/proj': opts.mode } : {}
   const sent: { text: string; context: readonly string[] }[] = []
   const calls: Call[] = []
+  const diary = { isOn: false, isTodayWritten: false, ...opts.diary }
+  const diaryRuns: string[] = []
+  on('process.run', (_, e) => {
+    const args = e.argv.slice(2)
+    const result = (stdout: string, exitCode = 0) => ({
+      value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    if (args[0] === 'status') return result(JSON.stringify({ on: diary.isOn, today_written: diary.isTodayWritten }))
+    diaryRuns.push(args.join(' '))
+    if (args[0] === 'on') {
+      if (opts.diary?.isOnRefused) return result('자동 실행은 지금 macOS에서만 켤 수 있다.', 2)
+      diary.isOn = true
+    }
+    if (args[0] === 'off') diary.isOn = false
+    if (args[0] === 'write') diary.isTodayWritten = true
+
+    return result('썼다: 일기')
+  })
   mock.env(on, { HOME: '/home' })
   on('session.cwd', () => ({ value: '/proj' }))
   on('session.root', () => ({ value: '/proj' }))
@@ -101,7 +121,7 @@ function engine(on: On, opts: { mode?: string; files?: Record<string, string>; v
     return <Text>engine</Text>
   })
 
-  return { sent, calls, store }
+  return { sent, calls, store, diaryRuns }
 }
 
 const asks = (c: Call | undefined) => !!c?.system.includes('## 빈 곳 점검')
@@ -129,6 +149,77 @@ async function setGoal($: any, clock: any) {
   await $.turn.complete(turnEnd(0, '목표를 저장했어요'))
   await clock.advance(10)
 }
+
+test('turning the diary on asks about today; agreeing writes it, from the band', async ($, on) => {
+  const eng = engine(on, {})
+  await start($)
+  await run($, 'hack-mode')
+  const picker = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await picker.find({ type: 'Text', text: /세션 일기: 꺼짐/ })).toBeTruthy()
+  await picker.press({ key: 'diary-on' })
+  await picker.unmount()
+  expect(eng.diaryRuns).toEqual(['on'])
+
+  const card = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await card.find({ type: 'Text', text: /현재 시점으로 오늘 일기를 쓸까요/ })).toBeTruthy()
+  expect(await card.find({ type: 'Text', text: /이것으로 마무리돼요/ })).toBeTruthy()
+  await card.press({ key: 'diary-write' })
+  await card.unmount()
+  expect(eng.diaryRuns).toEqual(['on', 'write --force'])
+
+  const after = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await after.find({ key: 'diary-write' })).toBeFalsy()
+  await after.unmount()
+})
+
+test('saying no leaves it to midnight and writes nothing', async ($, on) => {
+  const eng = engine(on, {})
+  await start($)
+  await run($, 'hack-mode')
+  const picker = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  await picker.press({ key: 'diary-on' })
+  await picker.unmount()
+
+  const card = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await card.find({ type: 'Text', text: /안 쓰면 자정에 하루 전체로/ })).toBeTruthy()
+  await card.press({ key: 'diary-later' })
+  await card.unmount()
+  expect(eng.diaryRuns).toEqual(['on'])
+})
+
+test('/session-diary-now warns that the earlier diary is discarded when one exists', async ($, on) => {
+  const eng = engine(on, { diary: { isOn: true, isTodayWritten: true } })
+  await start($)
+  await run($, 'session-diary-now')
+  const card = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await card.find({ type: 'Text', text: /다시 쓸까요/ })).toBeTruthy()
+  expect(await card.find({ type: 'Text', text: /폐기/ })).toBeTruthy()
+  await card.press({ key: 'diary-write' })
+  await card.unmount()
+  expect(eng.diaryRuns).toEqual(['write --force'])
+})
+
+test('a refused turn-on asks nothing; the diary can be turned off from the picker', async ($, on) => {
+  const refused = engine(on, { diary: { isOnRefused: true } })
+  await start($)
+  await run($, 'hack-mode')
+  const picker = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  await picker.press({ key: 'diary-on' })
+  expect(await picker.find({ key: 'diary-write' })).toBeFalsy()
+  await picker.unmount()
+  expect(refused.diaryRuns).toEqual(['on'])
+})
+
+test('the picker turns a running diary off', async ($, on) => {
+  const eng = engine(on, { diary: { isOn: true } })
+  await start($)
+  await run($, 'hack-mode')
+  const picker = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await picker.find({ type: 'Text', text: /세션 일기: 켜짐/ })).toBeTruthy()
+  await picker.press({ key: 'diary-off' })
+  await picker.unmount()
+  expect(eng.diaryRuns).toEqual(['off'])
+})
 
 test('off by default: no judge call, no note, and the commands say how to turn on', async ($, on) => {
   const clock = mock.clock(on)

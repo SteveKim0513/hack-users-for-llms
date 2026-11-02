@@ -44,10 +44,17 @@ const hasCompass = (m: ModeName) => m === 'compass' || m === 'both'
 const hasCriteria = (m: ModeName) => m === 'criteria' || m === 'both'
 const offText = (name: string) => `${name}가 꺼져 있어요. /hack-mode에서 켜세요.`
 
-const MODE_EMPTY: HackMode = { mode: 'off', isPicking: false }
+const MODE_EMPTY: HackMode = {
+  mode: 'off',
+  isPicking: false,
+  isDiaryOn: false,
+  isDiaryAsking: false,
+  isTodayWritten: false,
+  isDiaryWriting: false,
+}
 
 const hackMode = atom({ plugin: 'hack-users-for-llms', key: 'mode' } as const, MODE_EMPTY, {
-  shape: 'mode-1',
+  shape: 'mode-2',
 })
 
 const EMPTY: Compass = {
@@ -662,7 +669,7 @@ async function registerTools($: EngineInterface) {
 }
 
 async function setMode($: EngineInterface, mode: ModeName) {
-  await update($, hackMode, () => ({ mode, isPicking: false }))
+  await update($, hackMode, cur => ({ ...cur, mode, isPicking: false }))
   if (!hasCriteria(mode)) await update($, compass, c => ({ ...c, question: null }))
   try {
     await $.store.set(await storeKey($), mode)
@@ -676,8 +683,95 @@ async function setMode($: EngineInterface, mode: ModeName) {
   $.ui.toast(`hack-mode: ${MODE_LABEL[mode]}`)
 }
 
-function modePicker($: EngineInterface, els: Record<string, any>, current: ModeName) {
+// ---------- session diary ----------
+
+// 일기는 프로젝트가 아니라 컴퓨터 전체의 일이라 모드와 따로 켠다. 쓰는 일은 session-diary 스킬의 스크립트가 한다.
+const DIARY_TIMEOUT_MS = 10 * 60 * 1000
+
+const runDiary = async ($: EngineInterface, args: string[]) =>
+  $.process.run(['python3', `${$.plugin.root}/skills/session-diary/scripts/diary_auto.py`, ...args], {
+    timeoutMs: DIARY_TIMEOUT_MS,
+  })
+
+const firstLine = (text: string) => clip(text.trim().split('\n')[0] ?? '', 120)
+
+// 일기 상태를 읽어 저장한다. 파이썬이 없는 등 읽지 못하면 꺼진 것으로 본다.
+async function refreshDiary($: EngineInterface) {
+  let status = { on: false, today_written: false }
+  try {
+    const res = await runDiary($, ['status', '--json'])
+    if (res.exitCode === 0) status = JSON.parse(res.stdout)
+  } catch {
+    // 꺼진 것으로 둔다.
+  }
+
+  return update($, hackMode, cur => ({ ...cur, isDiaryOn: status.on === true, isTodayWritten: status.today_written === true }))
+}
+
+async function turnDiaryOn($: EngineInterface) {
+  const res = await runDiary($, ['on']).catch(() => null)
+  if (!res || res.exitCode !== 0) {
+    $.ui.toast(`일기를 켜지 못했어요: ${res ? firstLine(res.stdout || res.stderr) : 'python3를 실행하지 못함'}`)
+
+    return
+  }
+  await refreshDiary($)
+  await update($, hackMode, cur => ({ ...cur, isPicking: false, isDiaryAsking: true }))
+}
+
+async function turnDiaryOff($: EngineInterface) {
+  const res = await runDiary($, ['off']).catch(() => null)
+  if (!res || res.exitCode !== 0) {
+    $.ui.toast('일기를 끄지 못했어요.')
+
+    return
+  }
+  await update($, hackMode, cur => ({ ...cur, isDiaryOn: false, isPicking: false }))
+  $.ui.toast('일기 자동 쓰기를 껐어요. 쓴 일기는 그대로 있어요.')
+}
+
+async function writeDiaryNow($: EngineInterface) {
+  await update($, hackMode, cur => ({ ...cur, isDiaryAsking: false, isDiaryWriting: true }))
+  $.ui.toast('오늘 일기를 쓰는 중이에요. 몇 분 걸릴 수 있어요.')
+  const res = await runDiary($, ['write', '--force']).catch(() => null)
+  await update($, hackMode, cur => ({ ...cur, isDiaryWriting: false, isTodayWritten: !!res && res.exitCode === 0 ? true : cur.isTodayWritten }))
+  $.ui.toast(res && res.exitCode === 0 ? firstLine(res.stdout) : `일기를 쓰지 못했어요: ${res ? firstLine(res.stdout || res.stderr) : '시간 초과'}`)
+}
+
+function diaryCard($: EngineInterface, els: Record<string, any>, m: HackMode) {
   const { Box, Text, Button } = els
+  const laterLabel = m.isDiaryOn && !m.isTodayWritten ? '자정에 쓰기' : '안 쓰기'
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="#7aa2f7" paddingX={1}>
+      <Text bold color="#7aa2f7">
+        {m.isTodayWritten ? '지금 시점으로 오늘 일기를 다시 쓸까요?' : '현재 시점으로 오늘 일기를 쓸까요?'}
+      </Text>
+      <Text>
+        {m.isTodayWritten
+          ? '이전 일기는 폐기되고, 내 메모도 함께 사라져요.'
+          : '지금 쓰면 오늘 일기는 이것으로 마무리돼요. 자정에 다시 쓰지 않아요.'}
+      </Text>
+      <Text dimColor>
+        0시부터 지금까지의 대화로 써요. AI 호출 비용이 들어요.
+        {m.isDiaryOn && !m.isTodayWritten ? ' 안 쓰면 자정에 하루 전체로 써요.' : ''}
+      </Text>
+      <Box flexDirection="row" gap={1}>
+        <Button key="diary-write" label={m.isTodayWritten ? '다시 쓰기' : '지금 쓰기'} hotkey="1" onPress={() => writeDiaryNow($)} />
+        <Button
+          key="diary-later"
+          label={laterLabel}
+          hotkey="2"
+          onPress={() => update($, hackMode, cur => ({ ...cur, isDiaryAsking: false }))}
+        />
+      </Box>
+    </Box>
+  )
+}
+
+function modePicker($: EngineInterface, els: Record<string, any>, m: HackMode) {
+  const { Box, Text, Button } = els
+  const current = m.mode
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="#7aa2f7" paddingX={1}>
@@ -695,6 +789,15 @@ function modePicker($: EngineInterface, els: Record<string, any>, current: ModeN
         ))}
       </Box>
       <Text dimColor>compass: 목표 진척 · criteria: 빈 곳 질문 · 이 프로젝트에서 계속 유지돼요</Text>
+      <Box flexDirection="row" gap={1}>
+        <Text>세션 일기: {m.isDiaryOn ? '켜짐' : '꺼짐'}</Text>
+        {m.isDiaryOn ? (
+          <Button key="diary-off" label="일기 끄기" onPress={() => turnDiaryOff($)} />
+        ) : (
+          <Button key="diary-on" label="일기 켜기" onPress={() => turnDiaryOn($)} />
+        )}
+      </Box>
+      <Text dimColor>일기: 매일 자정에 전날 대화를 일기로 남겨요 · 이 컴퓨터의 모든 프로젝트 대화를 읽어요</Text>
     </Box>
   )
 }
@@ -717,6 +820,7 @@ export const register: Register = on => {
       { name: 'compass-show', description: '지금 목표 보기' },
       { name: 'compass-reset', description: '목표와 경로 지우기' },
       { name: 'criteria-check', description: '지금 대화에서 빈 곳을 바로 점검해 질문 띄우기' },
+      { name: 'session-diary-now', description: '0시부터 지금까지로 오늘 세션 일기 쓰기' },
     ]
     for (const command of commands) await $.command.register(command)
 
@@ -737,9 +841,18 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'hack-mode' }, async $ => {
+    await refreshDiary($)
     const m = await update($, hackMode, cur => ({ ...cur, isPicking: true }))
 
     return { text: `지금 모드: ${MODE_LABEL[m.mode]}. 입력창 위에서 고르세요.` }
+  })
+
+  on('command.run', { command: 'session-diary-now' }, async $ => {
+    if ((await read($, hackMode)).isDiaryWriting) return { text: '오늘 일기를 쓰는 중이에요.' }
+    await refreshDiary($)
+    await update($, hackMode, cur => ({ ...cur, isDiaryAsking: true }))
+
+    return { text: '입력창 위에서 고르세요.' }
   })
 
   on('command.run', { command: 'compass' }, async ($, e) => {
@@ -1001,13 +1114,14 @@ export const register: Register = on => {
     return result
   })
 
-  // 입력창 위 자리는 하나다. 모드 고르기 > 질문 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
+  // 입력창 위 자리는 하나다. 모드 고르기 > 일기 확인 > 질문 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const m = await read($, hackMode)
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    if (m.isPicking) return modePicker($, els, m.mode)
+    if (m.isPicking) return modePicker($, els, m)
+    if (m.isDiaryAsking) return diaryCard($, els, m)
     if (m.mode === 'off') return next(e)
 
     const c = await read($, compass)

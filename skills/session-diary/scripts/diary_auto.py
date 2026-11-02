@@ -4,8 +4,10 @@
   on      자동 실행 켜기. 스크립트를 일기 폴더로 복사하고 launchd에 등록한다(macOS).
   off     자동 실행 끄기. 일기는 지우지 않는다.
   status  상태 보기.
-  tick    전날까지 빠진 일기를 쓴다. launchd가 매 정각과 로그인 때 부른다.
-  write   한 날짜를 쓴다. --force면 있어도 다시 쓴다.
+  tick    어제까지 빠진 일기를 쓴다. launchd가 매 정각과 로그인 때 부른다.
+  write   한 날짜를 쓴다. 날짜를 안 주면 오늘, 0시부터 지금까지로 쓴다. --force면 이전 일기를 폐기하고 다시 쓴다.
+
+일기 파일이 있는 날은 tick이 건너뛴다. 그래서 낮에 오늘 일기를 쓰면 그날 자정 자동 쓰기는 없다.
 
 AI는 도구 없이 글만 돌려받는다. 재료에는 웹 글이나 붙여넣은 글이 들어 있어, 사람이 없는 동안
 파일과 명령 권한을 가진 에이전트에게 읽히면 그 안의 지시를 따를 위험이 있기 때문이다.
@@ -147,19 +149,63 @@ def day_title(day):
 
 # ---------- 일기 만들기 ----------
 
-def build_material(day, exclude=()):
+def build_material(day):
+    # 지금 열린 세션도 빼지 않는다. 그 세션의 그날 대화도 일기의 재료다.
     args = argparse.Namespace(claude_dir=os.environ.get("SESSION_DIARY_CLAUDE_DIR", "~/.claude/projects"),
                               codex_dir=os.environ.get("SESSION_DIARY_CODEX_DIR", "~/.codex"),
-                              exclude_session=list(exclude))
+                              exclude_session=[])
     stats = Counter()
     sessions = day_sessions.collect(args, day, stats)
+    usage = day_sessions.day_usage(args, day, sessions, stats)
+    info = {"stats": stats, "usage": usage, "sessions": sessions, "commits": 0}
     if not sessions:
-        return None, stats
+        return None, info
     commit_map = day_sessions.commits(sessions, day, stats)
-    text = day_sessions.render(day, sessions, commit_map, stats)
+    info["commits"] = sum(total for total, _ in commit_map.values())
+    text = day_sessions.render(day, sessions, commit_map, stats, usage=usage)
     if len(text) > MAX_MATERIAL_CHARS:
-        text = day_sessions.render(day, sessions, commit_map, stats, THIN_AI_KEEP, THIN_QUESTION_KEEP)
-    return text, stats
+        text = day_sessions.render(day, sessions, commit_map, stats, THIN_AI_KEEP, THIN_QUESTION_KEEP, usage)
+    return text, info
+
+
+def statistics_block(info, spent):
+    """스크립트가 센 통계. AI가 옮겨 적으면 숫자가 틀릴 수 있어 직접 넣는다."""
+    lines = ["## 통계", "프로그램이 기록에서 센 값이다."]
+    if info["sessions"]:
+        f = day_sessions.facts(info["sessions"])
+        projects = ", ".join("%s %d개" % kv for kv in f["by_project"].most_common())
+        lines += ["- 세션 %d개 (%s)" % (f["sessions"], projects),
+                  "- 내 발화 %d개, 그중 %d자 이하 %d개" % (f["user_turns"], day_sessions.SHORT_CHARS, f["short_turns"]),
+                  "- 첫 발화 %s, 마지막 발화 %s, 활동 약 %d분" % (f["first"], f["last"], f["active_minutes"]),
+                  "- 커밋 %d개 (작성자가 나로 기록된 것. AI 커밋 포함)" % info["commits"]]
+    lines += day_sessions.usage_lines(info["usage"])
+    if spent:
+        lines.append("- 이 일기를 쓰는 데 든 것: 새 입력 %s, 출력 %s, 약 $%.2f" % (
+            format(sum(s["new"] for s in spent), ","), format(sum(s["out"] for s in spent), ","), sum(s["usd"] for s in spent)))
+    return "\n".join(lines) + "\n"
+
+
+def frontmatter_lines(info, spent):
+    u = info["usage"]["mine"]
+    lines = ["tokens_new: %d" % u["new"], "tokens_cache: %d" % u["cache"], "tokens_out: %d" % u["out"],
+             "tokens_auto_new: %d" % info["usage"]["auto"]["new"], "tokens_auto_out: %d" % info["usage"]["auto"]["out"],
+             "tokens_sub_new: %d" % info["usage"]["sub"]["new"], "tokens_sub_out: %d" % info["usage"]["sub"]["out"]]
+    if spent:
+        lines.append("diary_cost_usd: %.2f" % sum(s["usd"] for s in spent))
+    return lines
+
+
+def add_statistics(diary, info, spent):
+    """머리말에 숫자를, 본문의 내 메모 앞에 통계 칸을 넣는다. 다음 일기가 머리말로 추세를 본다."""
+    closing = re.search(r"^---[ \t]*$", diary[3:], flags=re.M)
+    if diary.startswith("---") and closing:
+        at = 3 + closing.start()
+        diary = diary[:at] + "\n".join(frontmatter_lines(info, spent)) + "\n" + diary[at:]
+    block = statistics_block(info, spent)
+    memo = re.search(r"^## 내 메모[ \t]*$", diary, flags=re.M)
+    if memo:
+        return diary[:memo.start()] + block + "\n" + diary[memo.start():]
+    return diary.rstrip() + "\n\n" + block
 
 
 def empty_diary(day, stats):
@@ -210,6 +256,8 @@ def section_notes(previous):
 
 def user_prompt(day, material, previous):
     parts = ["%s의 일기를 쓴다." % day_title(day), section_notes(previous)]
+    if day == datetime.date.today():
+        parts.append("하루 도중에 쓰는 일기다. 재료는 0시부터 지금까지뿐이다. 기록 범위에 그렇게 적는다.")
     if previous:
         parts.append("<지난_일기>\n%s\n</지난_일기>" % "\n\n=====\n\n".join(previous))
     parts.append("<재료>\n%s\n</재료>" % material)
@@ -224,6 +272,10 @@ def run_cli(cmd, prompt, cwd):
     return done.returncode, done.stdout, done.stderr
 
 
+# 이번 일기를 쓰는 동안의 AI 호출. Codex는 사용량을 돌려주지 않아 비어 있다.
+spent = []
+
+
 def ask_claude(state, system, prompt, cwd):
     cmd = [state["runner"], "-p", "--model", state.get("model") or DEFAULT_MODEL,
            "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
@@ -236,9 +288,10 @@ def ask_claude(state, system, prompt, cwd):
         raise RuntimeError("응답을 읽지 못함(코드 %s): %s" % (code, (err or out)[:200]))
     if data.get("is_error") or code != 0:
         raise RuntimeError(str(data.get("result") or data.get("subtype") or code)[:200])
-    log("  AI 호출: 입력 %s, 출력 %s, 약 $%.2f" % (
-        sum((data.get("usage") or {}).get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")),
-        (data.get("usage") or {}).get("output_tokens"), data.get("total_cost_usd") or 0))
+    tokens = data.get("usage") or {}
+    new = sum(tokens.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    spent.append({"new": new, "out": tokens.get("output_tokens") or 0, "usd": data.get("total_cost_usd") or 0})
+    log("  AI 호출: 입력 %s, 출력 %s, 약 $%.2f" % (new, tokens.get("output_tokens"), data.get("total_cost_usd") or 0))
     return data.get("result") or ""
 
 
@@ -285,10 +338,11 @@ def fix_quotes(state, diary, bad):
     return clean_output(ask(state, system, "<틀린_인용>\n%s\n</틀린_인용>\n\n<일기>\n%s\n</일기>" % (listing, diary)))
 
 
-def make_diary(day, state, exclude=()):
-    material, stats = build_material(day, exclude)
+def make_diary(day, state):
+    spent.clear()
+    material, info = build_material(day)
     if material is None:
-        return empty_diary(day, stats), "대화 없음"
+        return add_statistics(empty_diary(day, info["stats"]), info, spent), "대화 없음"
     previous = previous_diaries(day)
     earlier = "\n".join(previous)
     diary = check_quotes.repair(clean_output(ask(state, system_prompt(), user_prompt(day, material, previous))), material)
@@ -299,7 +353,7 @@ def make_diary(day, state, exclude=()):
         _, bad = check_quotes.problems(diary, material, earlier)
     if bad:
         diary = diary.rstrip() + "\n\n인용 검사를 통과하지 못한 인용 %d개가 남아 있다. 이 인용은 믿지 않는다.\n" % len(bad)
-    return diary, "일기 %d자, 재료 %d자" % (len(diary), len(material))
+    return add_statistics(diary, info, spent), "일기 %d자, 재료 %d자" % (len(diary), len(material))
 
 
 # ---------- 잠금 ----------
@@ -362,9 +416,10 @@ def tick(today=None):
 
 
 def write_one(day_text, force):
-    day = datetime.date.fromisoformat(day_text)
-    if day >= datetime.date.today():
-        print("%s은 아직 끝나지 않은 날이다. 하루가 끝나면 쓸 수 있다." % day_text)
+    today = datetime.date.today()
+    day = datetime.date.fromisoformat(day_text) if day_text else today
+    if day > today:
+        print("%s은 아직 오지 않은 날이다." % day_text)
         return 2
     if os.path.exists(diary_path(day)) and not force:
         print("이미 있다: %s (다시 쓰려면 --force)" % diary_path(day))
@@ -372,10 +427,9 @@ def write_one(day_text, force):
     state = load_state()
     if not state.get("runner"):
         state.update(find_runner())
-    exclude = [os.environ.get("CLAUDE_CODE_SESSION_ID"), os.environ.get("CODEX_THREAD_ID")]
     try:
         with Lock():
-            diary, note = make_diary(day, state, exclude)
+            diary, note = make_diary(day, state)
             write_atomic(diary_path(day), diary)
     except Busy:
         print("다른 일기를 쓰는 중이다. 잠시 뒤 다시 한다.")
@@ -450,8 +504,9 @@ def turn_on(model):
     state.update(find_runner())
     if model:
         state["model"] = model
+    # 켠 날부터 쓴다. 켠 날의 일기는 사람이 지금 쓰거나 그날 자정에 써진다.
     if not (was_on and state.get("since")):
-        state["since"] = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        state["since"] = datetime.date.today().isoformat()
     os.makedirs(auto_dir(), exist_ok=True)
     save_state(state)
     script = copy_app()
@@ -465,7 +520,7 @@ def turn_on(model):
         print("켜지 못했다: %s" % done.stderr.strip())
         return 1
     print("켰다. %s부터 일기를 쓴다. 위치: %s" % (state["since"], home()))
-    print("쓰는 도구: %s (%s). 어제 일기가 없으면 지금 바로 쓰기 시작한다." % (state["runner_kind"], state.get("model") or "기본 모델"))
+    print("쓰는 도구: %s (%s). 오늘 일기는 자정에 써진다. 지금 쓰려면 write." % (state["runner_kind"], state.get("model") or "기본 모델"))
     return 0
 
 
@@ -484,8 +539,11 @@ def turn_off():
     return 0
 
 
-def status():
+def status(as_json=False):
     state = load_state()
+    if as_json:
+        print(json.dumps({"on": is_loaded(), "today_written": os.path.exists(diary_path(datetime.date.today()))}))
+        return 0
     print("자동 실행: %s" % ("켜짐" if is_loaded() else "꺼짐"))
     if state.get("since"):
         print("시작 날짜: %s" % state["since"])
@@ -510,10 +568,10 @@ def main(argv=None):
     on = sub.add_parser("on")
     on.add_argument("--model", help="기본 sonnet")
     sub.add_parser("off")
-    sub.add_parser("status")
+    sub.add_parser("status").add_argument("--json", action="store_true")
     sub.add_parser("tick")
     write = sub.add_parser("write")
-    write.add_argument("--date", required=True)
+    write.add_argument("--date", help="YYYY-MM-DD. 없으면 오늘")
     write.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
     if args.command == "on":
@@ -521,7 +579,7 @@ def main(argv=None):
     if args.command == "off":
         return turn_off()
     if args.command == "status":
-        return status()
+        return status(args.json)
     if args.command == "tick":
         return tick()
     return write_one(args.date, args.force)

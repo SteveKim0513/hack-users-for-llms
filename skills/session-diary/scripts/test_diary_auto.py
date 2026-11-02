@@ -208,7 +208,8 @@ class TickTest(Base):
         bad = "---\ndate: x\n---\n\n# 일기\n\n「지어낸 말」(10:00)\n"
         self.state(since=D3, replies=[bad, GOOD])
         da.tick(TODAY)
-        self.assertEqual(self.diary(D3), GOOD)
+        self.assertIn("「소스를 필터해줘」(10:00)", self.diary(D3))
+        self.assertNotIn("지어낸 말", self.diary(D3))
         self.assertIn("지어낸 말", self.calls()[1]["stdin"])
         self.assertNotIn("<재료>", self.calls()[1]["stdin"])
 
@@ -245,9 +246,124 @@ class TickTest(Base):
         self.assertEqual(len(self.calls()), 1)
 
 
+class StatisticsTest(Base):
+    def assistant(self, day, msg_id, out, sid="s1", cwd="/home/a/proj"):
+        return {"type": "assistant", "sessionId": sid, "cwd": cwd, "requestId": "r" + msg_id,
+                "timestamp": "%sT10:01:00+09:00" % day.isoformat(),
+                "message": {"id": msg_id, "model": "claude-x", "content": [{"type": "text", "text": "답"}],
+                            "usage": {"input_tokens": 1, "cache_creation_input_tokens": 9, "cache_read_input_tokens": 100, "output_tokens": out}}}
+
+    def write_rows(self, relative, rows):
+        path = self.claude / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+
+    def test_tokens_are_split_by_who_and_counted_once(self):
+        self.write_rows("proj/s1.jsonl", [user_row(D3), self.assistant(D3, "m1", 5), self.assistant(D3, "m1", 5), self.assistant(D3, "m2", 7)])
+        self.write_rows("proj/s1/subagents/agent-1.jsonl", [self.assistant(D3, "m3", 11, sid="s1")])
+        self.write_rows("proj/auto.jsonl", [user_row(D3, sid="auto", cwd="/tmp/x"), self.assistant(D3, "m4", 13, sid="auto", cwd="/tmp/x")])
+        _, info = da.build_material(D3)
+        u = info["usage"]
+        self.assertEqual((u["mine"]["new"], u["mine"]["cache"], u["mine"]["out"]), (20, 200, 12))
+        self.assertEqual(u["sub"]["out"], 11)
+        self.assertEqual(u["auto"]["out"], 13)
+        self.assertEqual(u["models"]["claude-x"], 20 + 12 + 10 + 11 + 10 + 13)
+
+    def test_other_days_and_resumed_copies_are_not_counted(self):
+        self.write_rows("proj/s1.jsonl", [user_row(D3), self.assistant(D2, "old", 50), self.assistant(D3, "m1", 5)])
+        self.write_rows("proj/s2.jsonl", [user_row(D3, sid="s2"), self.assistant(D3, "m1", 5, sid="s2")])
+        _, info = da.build_material(D3)
+        self.assertEqual(info["usage"]["mine"]["out"], 5)
+
+    def test_codex_counts_only_what_grew_that_day(self):
+        def token(when, total_in, cached, out):
+            return {"type": "event_msg", "timestamp": "%sT10:00:00+09:00" % when.isoformat(),
+                    "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": total_in, "cached_input_tokens": cached, "output_tokens": out}}}}
+
+        path = self.root / "codex" / "sessions" / "r.jsonl"
+        path.parent.mkdir(parents=True)
+        rows = [{"type": "session_meta", "timestamp": "%sT09:00:00+09:00" % D2.isoformat(), "payload": {"id": "c1", "cwd": "/home/a/p", "source": "cli"}},
+                token(D2, 100, 40, 10), token(D3, 300, 140, 30),
+                {"type": "event_msg", "timestamp": "%sT10:00:00+09:00" % D3.isoformat(), "payload": {"type": "user_message", "message": "코덱스 질문"}}]
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        _, info = da.build_material(D3)
+        self.assertEqual((info["usage"]["mine"]["new"], info["usage"]["mine"]["cache"], info["usage"]["mine"]["out"]), (100, 100, 20))
+
+    def test_diary_gets_statistics_before_my_memo_and_numbers_in_the_header(self):
+        self.write_rows("proj/s1.jsonl", [user_row(D3), self.assistant(D3, "m1", 5)])
+        reply = "---\ndate: x\nseen: []\n---\n\n# 일기\n\n「소스를 필터해줘」(10:00)\n\n## 내 메모\n(직접 적는 칸.)\n"
+        self.state(since=D3, replies=[reply])
+        da.tick(TODAY)
+        text = self.diary(D3)
+        self.assertLess(text.index("## 통계"), text.index("## 내 메모"))
+        self.assertLess(text.index("tokens_out: 5"), text.index("# 일기"))
+        self.assertIn("이 일기를 쓰는 데 든 것", text)
+        self.assertIn("약 $0.01", text)
+        self.assertEqual(text.count("---\n"), 2)
+
+    def test_day_without_conversation_still_reports_automated_tokens_and_no_ai_cost(self):
+        self.write_rows("proj/auto.jsonl", [user_row(D3, sid="auto", cwd="/tmp/x"), self.assistant(D3, "m4", 13, sid="auto", cwd="/tmp/x")])
+        self.state(since=D3)
+        da.tick(TODAY)
+        text = self.diary(D3)
+        self.assertIn("세션 대화가 없었다", text)
+        self.assertIn("tokens_auto_out: 13", text)
+        self.assertNotIn("이 일기를 쓰는 데 든 것", text)
+
+    def test_previous_header_numbers_reach_the_next_diary(self):
+        Path(da.diary_path(D2)).write_text("---\ndate: 2\ntokens_out: 777\n---\n일기\n", encoding="utf-8")
+        self.session(D3)
+        self.state(since=D3)
+        da.tick(TODAY)
+        self.assertIn("tokens_out: 777", self.calls()[0]["stdin"])
+
+
 class WriteOneTest(Base):
-    def test_today_is_refused(self):
-        self.assertEqual(da.write_one(datetime.date.today().isoformat(), False), 2)
+    def test_future_date_is_refused(self):
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        self.assertEqual(da.write_one(tomorrow.isoformat(), False), 2)
+
+    def test_today_is_written_from_midnight_to_now_and_says_so(self):
+        self.session(datetime.date.today())
+        self.state(since=datetime.date.today(), replies=[GOOD])
+        self.assertEqual(da.write_one(None, False), 0)
+        self.assertTrue(os.path.exists(da.diary_path(datetime.date.today())))
+        self.assertIn("하루 도중에 쓰는 일기다", self.calls()[0]["stdin"])
+
+    def test_after_writing_today_the_midnight_run_does_not_write_it_again(self):
+        today = datetime.date.today()
+        self.session(today)
+        self.state(since=today, replies=[GOOD])
+        da.write_one(None, False)
+        calls = len(self.calls())
+        self.assertEqual(da.tick(today + datetime.timedelta(days=1)), 0)
+        self.assertEqual(len(self.calls()), calls)
+
+    def test_forced_rewrite_replaces_the_earlier_diary(self):
+        today = datetime.date.today()
+        self.session(today)
+        self.state(since=today, replies=[GOOD, GOOD.replace("# 일기", "# 나중 일기")])
+        da.write_one(None, False)
+        self.assertEqual(da.write_one(None, False), 2)
+        self.assertEqual(da.write_one(None, True), 0)
+        self.assertIn("나중 일기", self.diary(today))
+
+    def test_failed_rewrite_keeps_the_earlier_diary(self):
+        today = datetime.date.today()
+        self.session(today)
+        self.state(since=today, replies=[GOOD, "ERROR"])
+        da.write_one(None, False)
+        before = self.diary(today)
+        self.assertEqual(da.write_one(None, True), 1)
+        self.assertEqual(self.diary(today), before)
+
+    def test_the_open_session_is_included(self):
+        self.session(D3, sid="now")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "now"
+        self.addCleanup(os.environ.pop, "CLAUDE_CODE_SESSION_ID", None)
+        self.state(since=D3)
+        da.write_one(D3.isoformat(), False)
+        self.assertIn("소스를 필터해줘", self.calls()[0]["stdin"])
 
     def test_existing_needs_force(self):
         Path(da.diary_path(D3)).write_text("있음", encoding="utf-8")

@@ -60,7 +60,15 @@ export type GapQuestion = {
 // Which of the two mods /hack-mode turned on, and whether its picker is up.
 export type ModeName = 'off' | 'compass' | 'criteria' | 'both'
 
-export type HackMode = { mode: ModeName; isPicking: boolean }
+export type HackMode = {
+  mode: ModeName
+  isPicking: boolean
+  // The automatic session diary: on or off, and the card asking to write today's now.
+  isDiaryOn: boolean
+  isDiaryAsking: boolean
+  isTodayWritten: boolean
+  isDiaryWriting: boolean
+}
 
 declare module 'claude-code' {
   interface PluginState {

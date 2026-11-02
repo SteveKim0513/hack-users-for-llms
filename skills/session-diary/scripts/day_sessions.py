@@ -347,6 +347,96 @@ def commit_hash(line):
     return parts[1] if len(parts) > 1 else line
 
 
+def empty_usage():
+    return {"mine": Counter(), "sub": Counter(), "auto": Counter(), "models": Counter()}
+
+
+def claude_rows_usage(path, day, stats):
+    """그날의 메시지별 토큰. 한 메시지가 블록마다 줄로 남으므로 메시지 id로 묶어 한 번만 센다."""
+    found = {}
+    for o in read_jsonl(path, stats):
+        if o.get("type") != "assistant":
+            continue
+        message = o.get("message") or {}
+        tokens = message.get("usage")
+        when = local_time(o.get("timestamp"))
+        if not tokens or when is None or when.date() != day:
+            continue
+        key = (message.get("id"), o.get("requestId"))
+        row = {"new": (tokens.get("input_tokens") or 0) + (tokens.get("cache_creation_input_tokens") or 0),
+               "cache": tokens.get("cache_read_input_tokens") or 0,
+               "out": tokens.get("output_tokens") or 0, "model": message.get("model") or "?"}
+        if key not in found or row["out"] > found[key]["out"]:
+            found[key] = row
+    return found
+
+
+def add_tokens(usage, kind, row):
+    for name in ("new", "cache", "out"):
+        usage[kind][name] += row[name]
+    usage["models"][row["model"]] += row["new"] + row["out"]
+
+
+def codex_tokens(path, day, stats):
+    """토큰 기록은 누적값이다. 그날 늘어난 만큼만 센다. 입력에 캐시가 포함돼 있어 뺀다."""
+    prev = Counter()
+    gained = Counter()
+    for o in read_jsonl(path, stats):
+        p = o.get("payload") or {}
+        total = (p.get("info") or {}).get("total_token_usage") if p.get("type") == "token_count" else None
+        when = local_time(o.get("timestamp"))
+        if not total or when is None:
+            continue
+        now = Counter(new=(total.get("input_tokens") or 0) - (total.get("cached_input_tokens") or 0),
+                      cache=total.get("cached_input_tokens") or 0, out=total.get("output_tokens") or 0)
+        if when.date() == day:
+            for name in now:
+                gained[name] += max(0, now[name] - prev[name])
+        prev = now
+    return gained
+
+
+def day_usage(args, day, kept, stats):
+    """그날 쓴 토큰을 내 세션, 그 세션의 서브에이전트, 자동 실행으로 나눠 센다. 다시 연 세션이 옛 메시지를 또 적어도 한 번만 센다."""
+    usage = empty_usage()
+    mine = {s["id"] for s in kept}
+    seen = set()
+    root = os.path.expanduser(args.claude_dir)
+    groups = [(os.path.join(root, "*", "*.jsonl"), lambda p: "mine" if os.path.splitext(os.path.basename(p))[0] in mine else "auto"),
+              (os.path.join(root, "*", "*", "subagents", "*.jsonl"),
+               lambda p: "sub" if os.path.basename(os.path.dirname(os.path.dirname(p))) in mine else "auto")]
+    for pattern, classify in groups:
+        for path in recent_files(pattern, day):
+            for key, row in claude_rows_usage(path, day, stats).items():
+                if key not in seen:
+                    seen.add(key)
+                    add_tokens(usage, classify(path), row)
+    codex = os.path.expanduser(args.codex_dir)
+    imported = codex_imported_ids(codex)
+    for pattern in ("sessions/**/*.jsonl", "archived_sessions/*.jsonl"):
+        for path in recent_files(os.path.join(codex, pattern), day):
+            meta = next(read_jsonl(path, stats), {}).get("payload") or {}
+            if meta.get("id") in imported:
+                continue
+            gained = codex_tokens(path, day, stats)
+            kind = "mine" if meta.get("id") in mine else "auto"
+            usage[kind].update(gained)
+            usage["models"]["Codex"] += gained["new"] + gained["out"]
+    return usage
+
+
+def usage_lines(usage):
+    """사람이 읽는 토큰 통계. 캐시 읽기는 같은 내용을 다시 읽은 것이라 새 입력과 나눠 적는다."""
+    def row(name, c):
+        return "  - %s: 새 입력 %s, 캐시 읽기 %s, 출력 %s" % (name, format(c["new"], ","), format(c["cache"], ","), format(c["out"], ","))
+
+    lines = ["- 토큰", row("내 세션", usage["mine"]), row("그 세션의 서브에이전트", usage["sub"]), row("자동 실행", usage["auto"])]
+    models = [(m, n) for m, n in usage["models"].most_common() if n]
+    if models:
+        lines.append("  - 모델별(새 입력+출력): " + ", ".join("%s %s" % (m, format(n, ",")) for m, n in models))
+    return lines
+
+
 def group_commits(lines):
     """같은 제목이 반복되면(자동 스냅샷 등) 한 줄로 묶는다. 줄 형식: 시각 해시 제목."""
     groups = {}
@@ -378,7 +468,7 @@ def is_question(text):
     return len(text) <= QUESTION_MAX_CHARS and text.rstrip().endswith(QUESTION_ENDINGS)
 
 
-def render(day, sessions, commit_map, stats, ai_keep=AI_KEEP, question_keep=AI_BEFORE_QUESTION_KEEP):
+def render(day, sessions, commit_map, stats, ai_keep=AI_KEEP, question_keep=AI_BEFORE_QUESTION_KEEP, usage=None):
     f = facts(sessions)
     tools = ", ".join("%s %d개" % kv for kv in f["by_tool"].most_common())
     projects = ", ".join("%s %d개" % kv for kv in f["by_project"].most_common())
@@ -389,6 +479,8 @@ def render(day, sessions, commit_map, stats, ai_keep=AI_KEEP, question_keep=AI_B
            "- 첫 발화 %s, 마지막 발화 %s, 활동 약 %d분(%d분 넘는 공백 제외, 어림)" % (f["first"], f["last"], f["active_minutes"], IDLE_MINUTES),
            ]
     out += ["- %s: %d" % kv for kv in sorted(stats.items())]
+    if usage:
+        out += usage_lines(usage)
     out += ["", "## 그날의 커밋 (작성자가 나로 기록된 것. AI가 만든 커밋도 여기 들어간다)"]
     if commit_map:
         for project, (total, lines) in commit_map.items():
