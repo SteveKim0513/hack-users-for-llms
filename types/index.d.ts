@@ -37,6 +37,10 @@ export type Compass = {
   isJudging: boolean
   turn: number
   note: string
+  // The gap question waiting above the prompt, and how many this session asked.
+  question: GapQuestion | null
+  asked: number
+  lastAskTurn: number
 }
 
 // What the gap check found worth asking, and how it reads it.
@@ -53,15 +57,8 @@ export type GapQuestion = {
   turn: number
 }
 
-export type Gap = {
-  pending: GapQuestion | null
-  asked: number
-  lastAskTurn: number
-  turn: number
-}
-
 declare module 'claude-code' {
   interface PluginState {
-    'hack-users-for-llms': { compass: Shaped<Compass>; gap: Shaped<Gap> }
+    'hack-users-for-llms': { compass: Shaped<Compass> }
   }
 }
