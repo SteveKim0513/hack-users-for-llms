@@ -68,11 +68,12 @@ const EMPTY: Compass = {
   question: null,
   asked: 0,
   lastAskTurn: -999,
+  finished: [],
 }
 
 // Bump the tag when Compass changes shape: older stored values read as EMPTY.
 const compass = atom({ plugin: 'hack-users-for-llms', key: 'compass' } as const, EMPTY, {
-  shape: 'compass-2',
+  shape: 'compass-3',
 })
 
 // 모드는 프로젝트(세션의 루트 폴더)마다 따로 기억한다.
@@ -224,9 +225,10 @@ const SESSION_NOTE =
 
 // ---------- prompts ----------
 
-const interviewPrompt = (seed: string) =>
+const interviewPrompt = (seed: string, previous = '') =>
   [
     '[compass] 이 대화의 목표 지점을 정하는 인터뷰를 시작해 주세요.',
+    previous ? `방금 완료한 목표: "${previous}". 이어지는 일을 추천할 수는 있지만, 새 목표는 사용자에게 물어 정하세요.` : '',
     seed ? `사용자가 처음 꺼낸 생각: "${seed}"` : '',
     '',
     '규칙:',
@@ -281,7 +283,7 @@ const PROGRESS_RULES = `## 진척 판정
 - "up": 이 턴이 목표에 실질적으로 한 걸음 가까워지게 했다 (결정이 내려짐, 산출물이 진척됨, 막힌 문제가 풀림).
 - "flat": 제자리이거나 옆길이다 (확인만 함, 목표와 무관한 논의, 같은 얘기 반복).
 - "down": 목표에서 멀어졌다 (하지 말 것을 함, 잘못된 방향으로 만든 것을 되돌려야 함, 혼란이 커짐).
-- done: "다 됐다"의 기준을 이번 턴으로 충족했으면 true.
+- done: "다 됐다"의 기준을 이번 턴으로 충족했으면 true. 예상 걸음 수를 다 썼다는 것만으로는 true가 아니다. 최근 경로에 사용자가 아직 도착 전이라고 한 기록이 있으면, 그 뒤에 기준이 새로 충족됐을 때만 true.
 - pivot: 사용자가 목표 자체를 다른 방향으로 바꾸려는 신호가 분명하면 true. 단순히 AI가 옆길로 샌 것은 pivot이 아니라 flat/down이다.
 - pivot이 true면 new_destination(새 도착점 한 문장)과 carry(지금까지 한 일 중 새 목표에도 쓸모 있는 걸음 수, 0 이상)를 채운다.`
 
@@ -379,22 +381,26 @@ const parseVerdict = (text: string, turn: number): Verdict | null => {
 
 const currentSegment = (c: Compass) => Math.max(0, c.segments.length - 1)
 
+// 도착은 판정일 뿐이다. 사용자가 완료나 "아직"을 고를 때까지 이 상태로 기다린다.
+const isArrived = (c: Compass) => c.goal !== null && c.steps[c.steps.length - 1]?.kind === 'arrive'
+
 const applyVerdict = (c: Compass, turn: number, v: Verdict): Compass => {
   if (!c.goal) return c
   const last = c.steps[c.steps.length - 1]
   const height = last?.height ?? 0
   const rows = c.goal.rows
   let next = v.move === 'up' ? height + 1 : v.move === 'down' ? height - 1 : height
-  next = Math.max(0, Math.min(rows, next))
+  // 걸음 수는 예상일 뿐이라, 맨 윗칸은 "다 됐다" 기준을 채웠을 때만 밟는다.
+  next = Math.max(0, Math.min(rows - 1, next))
   let kind: StepKind = v.move
-  if (v.done || next >= rows) {
+  if (v.done) {
     next = rows
     kind = 'arrive'
   }
   const step: Step = { kind, height: next, segment: currentSegment(c), turn, reason: v.reason }
   const proposal: Proposal | null =
     c.proposal ??
-    (v.pivot && v.newDestination
+    (!v.done && v.pivot && v.newDestination
       ? {
           destination: v.newDestination,
           done: c.goal.done,
@@ -430,6 +436,29 @@ const confirmProposal = (c: Compass): Compass => {
     proposal: null,
     note: `방향 전환 확정 (T${c.turn})`,
   }
+}
+
+const finishGoal = (c: Compass): Compass => ({
+  ...c,
+  goal: null,
+  steps: [],
+  segments: [],
+  proposal: null,
+  note: '',
+  finished: c.goal ? [...c.finished, c.goal.destination] : c.finished,
+})
+
+const notArrivedYet = (c: Compass): Compass => {
+  if (!c.goal) return c
+  const step: Step = {
+    kind: 'flat',
+    height: Math.max(0, c.goal.rows - 1),
+    segment: currentSegment(c),
+    turn: c.turn,
+    reason: '사용자 확인: 아직 도착 전',
+  }
+
+  return { ...c, steps: [...c.steps, step].slice(-300) }
 }
 
 // ---------- drawing ----------
@@ -503,7 +532,7 @@ function openPane($: EngineInterface) {
 async function judge($: EngineInterface, snap: TurnSnapshot, force = false): Promise<boolean> {
   const { mode } = await read($, hackMode)
   const before = await read($, compass)
-  const progress = !force && hasCompass(mode) && before.goal !== null
+  const progress = !force && hasCompass(mode) && before.goal !== null && !isArrived(before)
   // 질문은 사용자 발화에 기대야 하므로, 사용자가 쓴 말이 없는 턴에서는 묻지 않는다.
   const wantsQuestion = hasCriteria(mode) && before.question === null && snap.prompt.trim() !== ''
   let cfg = DEFAULTS
@@ -543,7 +572,7 @@ async function judge($: EngineInterface, snap: TurnSnapshot, force = false): Pro
   })
   const last = after.steps[after.steps.length - 1]
   if (progress && last?.kind === 'arrive' && before.steps[before.steps.length - 1]?.kind !== 'arrive') {
-    $.ui.toast('🎯 목표에 도착했어요')
+    $.ui.toast('🎯 목표를 달성한 것 같아요. 입력창 위에서 완료할지 골라 주세요.')
   }
 
   return ask && after.question !== null && after.question.turn === snap.turn && before.question === null
@@ -606,6 +635,28 @@ function proposalButtons($: EngineInterface, Button: any, Box: any) {
         label="아니요, 옆길이에요"
         onPress={() => update($, compass, c => ({ ...c, proposal: null }))}
       />
+    </Box>
+  )
+}
+
+// 엔진은 명령 처리 중의 prompt.submit을 거부한다(끝나지 않은 그 차례를 기다리게 되므로). 차례가 끝난 뒤 보낸다.
+function submitSoon($: EngineInterface, text: string) {
+  $.clock.after(1, () => {
+    void $.prompt.submit({ text })
+  })
+}
+
+async function startNextGoal($: EngineInterface, seed = '') {
+  const c = await update($, compass, finishGoal)
+  submitSoon($, interviewPrompt(seed, c.finished[c.finished.length - 1] ?? ''))
+}
+
+function arrivalButtons($: EngineInterface, Button: any, Box: any) {
+  return (
+    <Box flexDirection="row" gap={1}>
+      <Button key="arrive-next" label="완료하고 새 목표 정하기" variant="primary" onPress={() => startNextGoal($)} />
+      <Button key="arrive-finish" label="완료만" onPress={() => update($, compass, finishGoal)} />
+      <Button key="arrive-not-yet" label="아직이에요" onPress={() => update($, compass, notArrivedYet)} />
     </Box>
   )
 }
@@ -860,15 +911,20 @@ export const register: Register = on => {
     const args = e.args.trim()
     const c = await read($, compass)
     await openPane($)
+    if (isArrived(c)) {
+      await startNextGoal($, args)
+
+      return { text: '목표를 완료하고 새 목표 인터뷰를 시작해요.' }
+    }
     if (c.goal && args) {
-      await $.prompt.submit({ text: changePrompt(c.goal, args) })
+      submitSoon($, changePrompt(c.goal, args))
 
       return { text: '목표 수정을 시작해요.' }
     }
     if (c.goal) {
       return { text: `지금 목표: ${c.goal.destination}\n고치기는 /compass 고칠 내용, 지우기는 /compass-reset` }
     }
-    await $.prompt.submit({ text: interviewPrompt(args) })
+    submitSoon($, interviewPrompt(args, c.finished[c.finished.length - 1] ?? ''))
 
     return { text: '목표 정하기 인터뷰를 시작해요.' }
   })
@@ -906,7 +962,7 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'mcp__hack-users-for-llms__set_goal' }, async ($, e) => {
     const c = await read($, compass)
-    if (c.goal) {
+    if (c.goal && !isArrived(c)) {
       return { result: '이미 목표가 있습니다. 높이 변경은 adjust_goal_height, 방향 변경은 propose_goal_change를 쓰세요.' }
     }
     const goal: Goal = {
@@ -917,7 +973,7 @@ export const register: Register = on => {
     }
     isSetupTurn = true
     await update($, compass, cur => ({
-      ...cur,
+      ...(isArrived(cur) ? finishGoal(cur) : cur),
       goal,
       segments: [{ destination: goal.destination, rows: goal.rows }],
       steps: [{ kind: 'start', height: 0, segment: 0, turn: cur.turn, reason: '출발' } as Step],
@@ -998,8 +1054,16 @@ export const register: Register = on => {
             key="start"
             label="목표 정하기"
             variant="primary"
-            onPress={() => $.prompt.submit({ text: interviewPrompt('') })}
+            onPress={() => startNextGoal($)}
           />
+          {c.finished.length > 0 && (
+            <Box flexDirection="column">
+              <Text bold>완료한 목표 {c.finished.length}개</Text>
+              {c.finished.slice(-5).map(d => (
+                <Text dimColor>★ {d}</Text>
+              ))}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -1047,6 +1111,13 @@ export const register: Register = on => {
           </Text>
         </Box>
         {board}
+        {isArrived(c) && (
+          <Box flexDirection="column" borderStyle="round" borderColor="#ffd700" paddingX={1}>
+            <Text bold>목표를 달성한 것 같아요</Text>
+            <Text dimColor>{last?.reason}</Text>
+            {arrivalButtons($, Button, Box)}
+          </Box>
+        )}
         {c.proposal && (
           <Box flexDirection="column" borderStyle="round" borderColor="#4da3ff" paddingX={1}>
             <Text bold>목표가 바뀐 건가요?</Text>
@@ -1057,7 +1128,7 @@ export const register: Register = on => {
             {proposalButtons($, Button, Box)}
           </Box>
         )}
-        <Text dimColor>▲ 가까워짐 · ▶ 제자리/옆길 · ▼ 멀어짐 · ↺ 방향 전환</Text>
+        <Text dimColor>▲ 가까워짐 · ▶ 제자리/옆길 · ▼ 멀어짐 · ↺ 방향 전환 · ★ 달성</Text>
         <Box flexDirection="column">
           {recent.map(s => (
             <Text dimColor={s.segment !== seg}>
@@ -1114,7 +1185,7 @@ export const register: Register = on => {
     return result
   })
 
-  // 입력창 위 자리는 하나다. 모드 고르기 > 일기 확인 > 질문 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
+  // 입력창 위 자리는 하나다. 모드 고르기 > 일기 확인 > 질문 > 목표 달성 확인 > 목표 전환 확인 > 2턴 연속 이탈 경고 순으로 보인다.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const m = await read($, hackMode)
@@ -1127,6 +1198,15 @@ export const register: Register = on => {
     const c = await read($, compass)
     if (hasCriteria(m.mode) && c.question) return questionCard($, els, c.question)
     if (!hasCompass(m.mode) || !c.goal) return next(e)
+
+    if (isArrived(c)) {
+      return (
+        <Box flexDirection="row" gap={1}>
+          <Text color="#ffd700">🎯 목표를 달성한 것 같아요: {clip(c.goal.destination, 40)}</Text>
+          {arrivalButtons($, Button, Box)}
+        </Box>
+      )
+    }
 
     if (c.proposal) {
       return (

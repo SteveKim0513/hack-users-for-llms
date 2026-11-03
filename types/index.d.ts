@@ -41,6 +41,8 @@ export type Compass = {
   question: GapQuestion | null
   asked: number
   lastAskTurn: number
+  // Destinations of the goals finished this session, oldest first.
+  finished: string[]
 }
 
 // What the gap check found worth asking, and how it reads it.
