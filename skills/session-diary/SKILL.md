@@ -7,7 +7,7 @@ description: 켜 두면 매일 자정에 그 전날의 AI 세션 기록(Claude C
 
 사람이 부르는 스킬이 아니다. 한 번 켜면 스크립트가 알아서 일기를 쓴다. 이 스킬은 켜고 끄고, 상태를 보고, 쓰인 일기를 읽어 주는 일만 한다. 일기를 쓰는 규칙은 `references/write.md`, 관찰 기준과 근거는 `references/observe.md`, 기록 형식은 `references/claude.md`, `references/codex.md`에 있다.
 
-아래 `<스킬>`은 이 스킬 폴더의 절대 경로다. 일기는 `~/.session-diary/<날짜>.md`에 있다. 지금은 macOS에서만 자동 실행을 켤 수 있다.
+아래 `<스킬>`은 이 스킬 폴더의 절대 경로다. 일기는 `~/.session-diary/<날짜>.md`에 있다. 지금은 macOS에서만 자동 실행을 켤 수 있다. 글은 이 컴퓨터에 로그인된 `claude -p`로 쓰므로 `claude` 명령이 필요하다. 어느 도구에서 불러도 같다.
 
 ## 켜기
 켜기 전에 한 번 알리고 확인을 받는다. 시키지 않았는데 켜지 않는다.

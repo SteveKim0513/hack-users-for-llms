@@ -447,6 +447,15 @@ class SwitchTest(Base):
         link.symlink_to(version)
         self.assertEqual(da.stable_path(str(link)), str(link))
 
+    def test_only_claude_can_write_even_if_codex_is_installed(self):
+        (self.root / "bin").mkdir()
+        codex = self.root / "bin" / "codex"
+        codex.write_text("#!/bin/sh\n", encoding="utf-8")
+        codex.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(self.root / "bin")}):
+            with self.assertRaises(SystemExit):
+                da.find_runner()
+
     def test_shell_scoped_runner_path_is_resolved(self):
         real = self.root / "node" / "codex"
         real.parent.mkdir()

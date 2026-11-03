@@ -180,7 +180,7 @@ def statistics_block(info, spent):
                   "- 커밋 %d개 (작성자가 나로 기록된 것. AI 커밋 포함)" % info["commits"]]
     lines += day_sessions.usage_lines(info["usage"])
     if spent:
-        lines.append("- 이 일기를 쓰는 데 든 것: 새 입력 %s, 출력 %s, 약 $%.2f" % (
+        lines.append("- 이 일기를 쓰는 데 든 것: 새 입력 %s, 출력 %s, API 요금 환산 약 $%.2f" % (
             format(sum(s["new"] for s in spent), ","), format(sum(s["out"] for s in spent), ","), sum(s["usd"] for s in spent)))
     return "\n".join(lines) + "\n"
 
@@ -302,7 +302,7 @@ def run_cli(cmd, prompt, cwd):
     return done.returncode, done.stdout, done.stderr
 
 
-# 이번 일기를 쓰는 동안의 AI 호출. Codex는 사용량을 돌려주지 않아 비어 있다.
+# 이번 일기를 쓰는 동안의 AI 호출.
 spent = []
 
 
@@ -325,28 +325,9 @@ def ask_claude(state, system, prompt, cwd):
     return data.get("result") or ""
 
 
-def ask_codex(state, system, prompt, cwd):
-    # Codex는 도구를 끌 수 없어 읽기 전용 격리로 돌린다.
-    fd, out_file = tempfile.mkstemp(dir=auto_dir(), prefix=".codex-")
-    os.close(fd)
-    cmd = [state["runner"], "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
-           "--color", "never", "-o", out_file]
-    if state.get("model"):
-        cmd += ["-m", state["model"]]
-    try:
-        code, _, err = run_cli(cmd, system + "\n\n" + prompt, cwd)
-        if code != 0:
-            raise RuntimeError("코드 %s: %s" % (code, err[-200:]))
-        with open(out_file, encoding="utf-8") as f:
-            return f.read()
-    finally:
-        os.unlink(out_file)
-
-
 def ask(state, system, prompt):
     os.makedirs(auto_dir(), exist_ok=True)
-    fn = ask_codex if state.get("runner_kind") == "codex" else ask_claude
-    return fn(state, system, prompt, auto_dir())
+    return ask_claude(state, system, prompt, auto_dir())
 
 
 def clean_output(text):
@@ -459,7 +440,8 @@ def write_one(day_text, force):
         print("이미 있다: %s (다시 쓰려면 --force)" % diary_path(day))
         return 2
     state = load_state()
-    if not state.get("runner"):
+    # 예전 판이 codex를 골라 둔 경우에도 claude로 바꾼다.
+    if state.get("runner_kind") != "claude":
         state.update(find_runner())
     try:
         with Lock():
@@ -488,11 +470,10 @@ def stable_path(path):
 
 
 def find_runner():
-    for kind, name in (("claude", "claude"), ("codex", "codex")):
-        path = shutil.which(name)
-        if path:
-            return {"runner": stable_path(path), "runner_kind": kind}
-    raise SystemExit("claude나 codex 명령을 찾지 못했다.")
+    path = shutil.which("claude")
+    if not path:
+        raise SystemExit("claude 명령을 찾지 못했다. 일기는 claude -p로 쓴다.")
+    return {"runner": stable_path(path), "runner_kind": "claude"}
 
 
 def plist_data(python, script, runner):
