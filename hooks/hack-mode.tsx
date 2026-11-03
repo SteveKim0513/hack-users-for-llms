@@ -344,6 +344,31 @@ const judgePrompt = (c: Compass, turn: TurnSnapshot, known: string[], withGoal: 
   return lines.join('\n')
 }
 
+// ---------- log ----------
+
+// 판정이 맞았는지 나중에 되짚는 기록. 저장소 밖에 세션마다 파일 하나를 둔다.
+// 엔진에 덧붙이기가 없어 읽고 다시 쓰므로, 순서가 꼬이지 않게 줄을 세운다. 기록 실패가 판정을 막으면 안 된다.
+let logQueue: Promise<void> = Promise.resolve()
+
+function logEvent($: EngineInterface, event: string, fields: Record<string, unknown>): Promise<void> {
+  logQueue = logQueue.then(async () => {
+    try {
+      const home = ((await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+      if (!home) return
+      const project = (await $.session.root()).replace(/[^A-Za-z0-9._-]+/g, '-')
+      const session = await $.session.id()
+      const path = `${home}/.hack-mode/judge-log/${project}/${session}.jsonl`
+      const old = (await $.fs.exists(path)) ? await $.fs.read(path) : ''
+      const at = new Date(await $.clock.now()).toISOString()
+      await $.fs.write(path, `${old}${JSON.stringify({ at, event, ...fields })}\n`)
+    } catch {
+      // 기록하지 못해도 세션은 그대로 간다.
+    }
+  })
+
+  return logQueue
+}
+
 // ---------- state changes ----------
 
 type TurnSnapshot = { turn: number; prompt: string; answer: string; tools: string[] }
@@ -553,8 +578,9 @@ async function judge($: EngineInterface, snap: TurnSnapshot, force = false): Pro
 
   if (progress) await update($, compass, c => ({ ...c, isJudging: true }))
   const withGoal = hasCompass(mode) && before.goal !== null
+  const model = ask ? QUESTION_MODEL : PROGRESS_MODEL
   const res = await $.model.complete({
-    model: ask ? QUESTION_MODEL : PROGRESS_MODEL,
+    model,
     system: judgeSystem({ progress, ask, withGoal, intensity: cfg.intensity }),
     prompt: judgePrompt(before, snap, known, withGoal),
     maxTokens: ask ? 700 : 300,
@@ -571,6 +597,30 @@ async function judge($: EngineInterface, snap: TurnSnapshot, force = false): Pro
     return { ...next, question: verdict.question, asked: next.asked + 1, lastAskTurn: snap.turn }
   })
   const last = after.steps[after.steps.length - 1]
+  await logEvent($, 'judge', {
+    turn: snap.turn,
+    model,
+    ok: verdict !== null,
+    ...(res.isAnswered
+      ? verdict
+        ? {}
+        : { why: 'unparsed', text: clip(res.text, 300) }
+      : { why: res.reason }),
+    ...(progress
+      ? {
+          goal: before.goal?.destination,
+          kind: verdict ? last?.kind : undefined,
+          height: last?.height,
+          rows: before.goal?.rows,
+          reason: verdict?.reason,
+          done: verdict?.done,
+          pivot: verdict?.pivot,
+          new_destination: verdict?.newDestination || undefined,
+        }
+      : {}),
+    ...(ask ? { question: verdict?.question ?? null } : {}),
+    tokens: res.usage,
+  })
   if (progress && last?.kind === 'arrive' && before.steps[before.steps.length - 1]?.kind !== 'arrive') {
     $.ui.toast('🎯 목표를 달성한 것 같아요. 입력창 위에서 완료할지 골라 주세요.')
   }
@@ -582,6 +632,7 @@ async function reply($: EngineInterface, answer: string) {
   const q = (await read($, compass)).question
   if (!q || !answer.trim()) return
   await update($, compass, c => ({ ...c, question: null }))
+  await logEvent($, 'question-answered', { kind: q.kind, question: q.question })
   await $.prompt.submit({ text: answerPrompt(q, answer.trim()) })
 }
 
@@ -615,7 +666,14 @@ function questionCard($: EngineInterface, els: Record<string, any>, q: GapQuesti
       )}
       <Box flexDirection="row" gap={1}>
         <Button key="gap-unknown" label="모름" onPress={() => reply($, '모름')} />
-        <Button key="gap-skip" label="건너뛰기" onPress={() => update($, compass, c => ({ ...c, question: null }))} />
+        <Button
+          key="gap-skip"
+          label="건너뛰기"
+          onPress={async () => {
+            await update($, compass, c => ({ ...c, question: null }))
+            await logEvent($, 'question-skipped', { kind: q.kind, question: q.question })
+          }}
+        />
       </Box>
     </Box>
   )
@@ -628,12 +686,20 @@ function proposalButtons($: EngineInterface, Button: any, Box: any) {
         key="pivot-yes"
         label="바뀐 게 맞아요"
         variant="primary"
-        onPress={() => update($, compass, confirmProposal)}
+        onPress={async () => {
+          const c = await read($, compass)
+          await update($, compass, confirmProposal)
+          await logEvent($, 'pivot-yes', { goal: c.goal?.destination, to: c.proposal?.destination, turn: c.turn })
+        }}
       />
       <Button
         key="pivot-no"
         label="아니요, 옆길이에요"
-        onPress={() => update($, compass, c => ({ ...c, proposal: null }))}
+        onPress={async () => {
+          const c = await read($, compass)
+          await update($, compass, cur => ({ ...cur, proposal: null }))
+          await logEvent($, 'pivot-no', { goal: c.goal?.destination, to: c.proposal?.destination, turn: c.turn })
+        }}
       />
     </Box>
   )
@@ -646,6 +712,13 @@ function submitSoon($: EngineInterface, text: string) {
   })
 }
 
+// 달성 판정에 사용자가 뭐라고 답했는지가 판정의 정답지라 함께 남긴다.
+async function answerArrival($: EngineInterface, event: string, change: (c: Compass) => Compass) {
+  const c = await read($, compass)
+  await update($, compass, change)
+  await logEvent($, event, { goal: c.goal?.destination, turn: c.turn })
+}
+
 async function startNextGoal($: EngineInterface, seed = '') {
   const c = await update($, compass, finishGoal)
   submitSoon($, interviewPrompt(seed, c.finished[c.finished.length - 1] ?? ''))
@@ -654,9 +727,18 @@ async function startNextGoal($: EngineInterface, seed = '') {
 function arrivalButtons($: EngineInterface, Button: any, Box: any) {
   return (
     <Box flexDirection="row" gap={1}>
-      <Button key="arrive-next" label="완료하고 새 목표 정하기" variant="primary" onPress={() => startNextGoal($)} />
-      <Button key="arrive-finish" label="완료만" onPress={() => update($, compass, finishGoal)} />
-      <Button key="arrive-not-yet" label="아직이에요" onPress={() => update($, compass, notArrivedYet)} />
+      <Button
+        key="arrive-next"
+        label="완료하고 새 목표 정하기"
+        variant="primary"
+        onPress={async () => {
+          const { goal, turn } = await read($, compass)
+          await logEvent($, 'arrive-next', { goal: goal?.destination, turn })
+          await startNextGoal($)
+        }}
+      />
+      <Button key="arrive-finish" label="완료만" onPress={() => answerArrival($, 'arrive-finish', finishGoal)} />
+      <Button key="arrive-not-yet" label="아직이에요" onPress={() => answerArrival($, 'arrive-not-yet', notArrivedYet)} />
     </Box>
   )
 }
@@ -912,6 +994,7 @@ export const register: Register = on => {
     const c = await read($, compass)
     await openPane($)
     if (isArrived(c)) {
+      await logEvent($, 'arrive-next', { goal: c.goal?.destination, turn: c.turn })
       await startNextGoal($, args)
 
       return { text: '목표를 완료하고 새 목표 인터뷰를 시작해요.' }
@@ -980,6 +1063,7 @@ export const register: Register = on => {
       proposal: null,
       note: '',
     }))
+    await logEvent($, 'goal-set', { ...goal, turn: c.turn })
     void openPane($)
 
     return { result: `목표를 저장했습니다. 이제 매 턴 진척이 패널에 표시됩니다. (${goal.rows}걸음)` }

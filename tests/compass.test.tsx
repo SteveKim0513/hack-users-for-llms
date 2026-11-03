@@ -292,3 +292,60 @@ test('/compass really starts the interview, and /compass words really start a ch
   await clock.advance(10)
   expect(sent[sent.length - 1]).toContain('목표를 고치고 싶어 합니다')
 })
+
+// In-memory files under a fake home, for the judge log.
+function logFiles(on: any, opts: { isWriteRefused?: boolean } = {}) {
+  const files: Record<string, string> = {}
+  on('env.get', () => ({ value: '/home/me' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('fs.exists', (_: unknown, e: { path: string }) => ({ value: e.path in files }))
+  on('fs.read', (_: unknown, e: { path: string }) => ({ value: files[e.path] ?? '' }))
+  on('fs.write', (_: unknown, e: { path: string; text: string }) => {
+    if (opts.isWriteRefused) throw new Error('disk full')
+    files[e.path] = e.text
+
+    return { value: undefined }
+  })
+  const lines = () =>
+    (files['/home/me/.hack-mode/judge-log/-proj/s1.jsonl'] ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+
+  return { lines }
+}
+
+test('every judgment and the answer to it land in the session log, in order', async ($, on) => {
+  const { lines } = logFiles(on)
+  const { turn } = await withGoal($, on, [verdict({ reason: '헤드라인 결정' }), verdict({ done: true, reason: '승인됨' })])
+  await turn(2)
+  await turn(3)
+  const band = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  await band.press({ key: 'arrive-not-yet' })
+  await band.unmount()
+
+  const log = lines()
+  expect(log.map(l => l.event)).toEqual(['goal-set', 'judge', 'judge', 'arrive-not-yet'])
+  expect(log[1]).toMatchObject({ ok: true, kind: 'up', height: 1, rows: 2, reason: '헤드라인 결정', goal: '랜딩 페이지 카피 확정' })
+  expect(log[1].tokens.input_tokens).toBe(10)
+  expect(log[2]).toMatchObject({ kind: 'arrive', height: 2, done: true })
+  expect(log[3].goal).toBe('랜딩 페이지 카피 확정')
+  expect(typeof log[0].at).toBe('string')
+})
+
+test('an unreadable verdict is logged with what came back', async ($, on) => {
+  const { lines } = logFiles(on)
+  const { turn } = await withGoal($, on, ['JSON이 아닌 답'])
+  await turn(2)
+  const judge = lines().find(l => l.event === 'judge')
+  expect(judge).toMatchObject({ ok: false, why: 'unparsed', text: 'JSON이 아닌 답' })
+})
+
+test('a log that cannot be written changes nothing else', async ($, on) => {
+  logFiles(on, { isWriteRefused: true })
+  const { turn } = await withGoal($, on, [verdict({ done: true })])
+  await turn(2)
+  const band = await $.ui.mount({ ...BAND, surface: 'vscode' })
+  expect(await band.find({ type: 'Text', text: /목표를 달성한 것 같아요/ })).toBeTruthy()
+  await band.unmount()
+})

@@ -117,6 +117,8 @@ python3 ~/.agents/skills/session-diary/scripts/diary_auto.py on
 
 **둘 다:** 판정 한 번(Sonnet)으로 진척과 질문을 함께 하고, 질문도 목표에 비추어 고릅니다.
 
+**판정 기록:** compass나 criteria를 켠 동안 판정마다 한 줄씩 `~/.hack-mode/judge-log/<프로젝트>/<세션 id>.jsonl`에 남깁니다. 판정 결과와 이유, 띄운 질문, 쓴 토큰, 실패 이유, 달성 판정과 목표 전환에 사용자가 고른 답이 들어갑니다. 대화 일부가 이유와 질문 문장에 섞일 수 있습니다. 이 컴퓨터에만 저장하고 자동으로 지우지 않으며, 플러그인을 지워도 남습니다. 필요 없으면 폴더를 지우세요.
+
 **위임 전 점검 훅:** `criteria-init`으로 켜면 일을 맡기는 요청이 감지될 때만 기록소를 조회해, 확정 기준을 Claude에게 알리고 없으면 작업 전에 묻게 합니다. 기본은 꺼짐입니다. 세션당 횟수 제한과 쿨다운이 있습니다.
 
 ## 업데이트
@@ -157,7 +159,7 @@ Codex는 이 명령입니다.
 npx skills remove criteria criteria-gap criteria-init session-diary -g -y
 ```
 
-**3. 일기까지 지우려면** `~/.session-diary` 폴더를 지웁니다. 일기는 자동으로 지워지지 않습니다.
+**3. 기록까지 지우려면** `~/.session-diary`(일기)와 `~/.hack-mode`(판정 기록) 폴더를 지웁니다. 자동으로 지워지지 않습니다.
 
 ## 확인한 것과 확인하지 못한 것
 
