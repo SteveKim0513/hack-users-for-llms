@@ -90,7 +90,7 @@ python3 ~/.agents/skills/session-diary/scripts/diary_auto.py on
 
 ## 세션 플레이북
 
-`/hack-users-for-llms:session-playbook`을 부르면 최근 2주의 Claude Code 세션이 제목, 프로젝트, 시각, 첫 요청과 함께 번호 목록으로 나옵니다. 여러 개를 고르면 그 대화를 읽어 작업 명세, 근거 인용이 붙은 노하우, 스킬로 만들 만한 후보, 새 세션에 붙여 쓸 프롬프트를 한 파일로 `~/.session-playbook/<날짜>-<주제>.md`에 저장합니다.
+`/hack-users-for-llms:session-playbook`을 부르면 최근 2주의 Claude Code 세션이 제목, 프로젝트, 시각, 첫 요청과 함께 번호 목록으로 나옵니다. 여러 개를 고르면 그 대화를 읽어 작업 명세, 근거 인용이 붙은 노하우(스킬의 어느 칸으로 갈지 포함), 스킬로 만들 만한 후보(켜는 말, 다 됐다의 기준, 사람에게 남길 판단 포함), 새 세션에 붙여 쓸 프롬프트를 한 파일로 `~/.session-playbook/<날짜>-<주제>.md`에 저장합니다.
 
 **보내는 것:** 고른 세션의 대화가 지금 쓰는 Claude 세션으로 들어갑니다. 고르지 않은 세션은 읽지 않습니다. 파일에 대화 일부가 인용되므로 공개 저장소에 올리지 마세요.
 
