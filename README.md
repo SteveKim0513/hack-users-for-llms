@@ -77,6 +77,7 @@ python3 ~/.claude/plugins/cache/hack-users-for-llms/hack-users-for-llms/<버전>
 | 스킬 | 하는 일 |
 |---|---|
 | `/hack-users-for-llms:session-diary` | 일기 켜기, 끄기, 상태 보기, 읽어 주기, 다시 쓰기 |
+| `/hack-users-for-llms:session-playbook` | 최근 세션 목록에서 여러 개를 골라, 작업 명세와 노하우, 스킬 후보, 붙여 쓸 프롬프트를 md 파일로 저장 |
 | `/hack-users-for-llms:criteria` | 판단 기준 기록, 조회, 변경 |
 | `/hack-users-for-llms:criteria-gap` | 대화에서 기준 없이 맡긴 곳을 찾아 묻기 (`criteria` 필요) |
 | `/hack-users-for-llms:criteria-init` | 일을 맡기기 전 기준 점검 훅 켜고 끄기, 질문 강도와 횟수 정하기 |
@@ -86,6 +87,14 @@ Codex에서는 "세션 일기 상태 보여줘"처럼 말로 부릅니다. Codex
 ```bash
 python3 ~/.agents/skills/session-diary/scripts/diary_auto.py on
 ```
+
+## 세션 플레이북
+
+`/hack-users-for-llms:session-playbook`을 부르면 최근 2주의 Claude Code 세션이 제목, 프로젝트, 시각, 첫 요청과 함께 번호 목록으로 나옵니다. 여러 개를 고르면 그 대화를 읽어 작업 명세, 근거 인용이 붙은 노하우, 스킬로 만들 만한 후보, 새 세션에 붙여 쓸 프롬프트를 한 파일로 `~/.session-playbook/<날짜>-<주제>.md`에 저장합니다.
+
+**보내는 것:** 고른 세션의 대화가 지금 쓰는 Claude 세션으로 들어갑니다. 고르지 않은 세션은 읽지 않습니다. 파일에 대화 일부가 인용되므로 공개 저장소에 올리지 마세요.
+
+**한계:** Claude Code 세션만 읽습니다(Codex 기록은 읽지 않음). 긴 세션은 가운데를 줄여 읽습니다. 만든 노하우가 실제로 좋은 프롬프트가 되는지는 확인하지 못했습니다. 목록과 본문 뽑기만 실제 기록으로 확인했습니다.
 
 ## 세션 일기
 
@@ -156,10 +165,10 @@ claude plugin marketplace remove hack-users-for-llms
 Codex는 이 명령입니다.
 
 ```bash
-npx skills remove criteria criteria-gap criteria-init session-diary -g -y
+npx skills remove criteria criteria-gap criteria-init session-diary session-playbook -g -y
 ```
 
-**3. 기록까지 지우려면** `~/.session-diary`(일기)와 `~/.hack-mode`(판정 기록) 폴더를 지웁니다. 자동으로 지워지지 않습니다.
+**3. 기록까지 지우려면** `~/.session-diary`(일기), `~/.session-playbook`(노하우 파일)과 `~/.hack-mode`(판정 기록) 폴더를 지웁니다. 자동으로 지워지지 않습니다.
 
 ## 확인한 것과 확인하지 못한 것
 
@@ -187,5 +196,6 @@ npx skills remove criteria criteria-gap criteria-init session-diary -g -y
 ```bash
 (cd hooks && python3 -m unittest -v test_criteria_hook)
 (cd skills/session-diary/scripts && python3 -m unittest -v test_day_sessions test_diary_auto)
+(cd skills/session-playbook/scripts && python3 -m unittest -v test_sessions)
 claude plugin validate . && claude plugin test .
 ```
